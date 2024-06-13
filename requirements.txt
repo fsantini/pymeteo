@@ -1,0 +1,8 @@
+matplotlib
+numpy
+meteostat
+#Cartopy
+#PyQt5
+streamlit
+folium
+streamlit_folium
