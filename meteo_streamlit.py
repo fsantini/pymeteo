@@ -10,6 +10,7 @@ st.title("Click on the map to get the typical winds")
 
 st.write("This app displays the typical winds for a given location and date. Click on the map to select a location, then choose a date from the calendar. The app will display the typical wind speeds and directions for that location and date.")
 st.write("Data from meteostat. Map from Folium (OpenStreetMap).")
+st.write("Speeds are in kn. The width of the wedges is proportional to how common the wind is. Winds below 5 knots are not displayed and the percentage of the time when the wind is below 5 knots is displayed in the circle in the middle of the plot.")
 def get_pos(lat,lng):
     return lat,lng
 
