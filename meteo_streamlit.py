@@ -47,3 +47,4 @@ if map['last_clicked']:
     else:
         placeholder.error("An error occurred. Please try a different coordinate.")
 
+st.write("App by [Francesco Santini](https://francescosantini.com/). Code on [Github](https://github.com/fsantini/pymeteo).")
