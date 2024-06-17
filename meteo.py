@@ -19,7 +19,6 @@ month = 7
 day = 2
 
 average_years = 7
-min_speed = 5
 
 now = datetime.now()
 current_year = now.year
@@ -28,7 +27,7 @@ desired_date = datetime(current_year, month, day)
 coords = coordinates.split(',')
 coords = [float(c.strip()) for c in coords]
 
-def plot_winds(coords, desired_date):
+def plot_winds(coords, desired_date, min_speed = 5):
     location = Point(coords[0], coords[1], 0)
     location.radius = 100000
     location.method = 'weighted'
