@@ -1,6 +1,6 @@
 matplotlib
 numpy
-meteostat
+meteostat==1.6.7
 #Cartopy
 #PyQt5
 streamlit
