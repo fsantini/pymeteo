@@ -9,7 +9,7 @@ Created on Sun Oct  1 15:51:29 2023
 from datetime import datetime, timedelta, date
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from meteostat import Point, Daily, Hourly
+from meteostat import Point, hourly, interpolate, stations
 import math
 import numpy as np
 
@@ -29,8 +29,7 @@ coords = [float(c.strip()) for c in coords]
 
 def plot_winds(coords, desired_date, min_speed = 5):
     location = Point(coords[0], coords[1], 0)
-    location.radius = 100000
-    location.method = 'weighted'
+    nearby_stations = stations.nearby(location, radius=100000, limit=10)
     now = datetime.now()
     current_year = now.year
 
@@ -48,12 +47,12 @@ def plot_winds(coords, desired_date, min_speed = 5):
     else:
         starting_year = current_year - 1
 
-    def get_data_for_year(year, month, day, point):
+    def get_data_for_year(year, month, day, point, station_ids):
         midpoint = datetime(year, month, day)
         start = midpoint - timedelta(days=3)
         end = midpoint + timedelta(days=3)
-        data = Hourly(point, start, end)
-        data = data.fetch()
+        ts = hourly(station_ids, start, end)
+        data = interpolate(ts, point).fetch()
         return data
 
     wind_speeds = []
@@ -62,11 +61,13 @@ def plot_winds(coords, desired_date, min_speed = 5):
     precip = []
 
     for year in range(starting_year-average_years+1, starting_year+1):
-        d = get_data_for_year(year, month, day, location)
-        wind_speeds.extend(d['wspd'])
-        wind_dirs.extend(d['wdir'])
-        temps.extend(d['temp'].dropna())
-        precip.extend(d['prcp'].dropna())
+        d = get_data_for_year(year, month, day, location, nearby_stations)
+        wind_speeds.extend(d['wspd'] if 'wspd' in d else [math.nan]*len(d))
+        wind_dirs.extend(d['wdir'] if 'wdir' in d else [math.nan]*len(d))
+        if 'temp' in d:
+            temps.extend(d['temp'].dropna())
+        if 'prcp' in d:
+            precip.extend(d['prcp'].dropna())
 
 
     # sanitize wind
@@ -274,7 +275,7 @@ def plot_winds(coords, desired_date, min_speed = 5):
              va='bottom',
              transform=f.transFigure)
     plt.text(0.5,0.9,
-             f'Week of {months[desired_date.month-1]} {desired_date.day}, Loc: {location._lat:.2f}, {location._lon:.2f}',
+             f'Week of {months[desired_date.month-1]} {desired_date.day}, Loc: {location.latitude:.2f}, {location.longitude:.2f}',
              ha='center',
              va='bottom',
              transform=f.transFigure)
