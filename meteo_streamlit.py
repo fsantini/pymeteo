@@ -5,6 +5,7 @@ from streamlit_folium import st_folium
 import datetime
 from datetime import date
 from meteo import plot_winds
+from tides import tide_figures, get_tides, available_sources, NoDataError
 
 st.title("Click on the map to get the typical winds")
 
@@ -32,6 +33,13 @@ with col1:
 with col2:
     cutoff_speed = st.slider("Select a cutoff wind speed", min_value=0, max_value=30, value=5, step=1)
 
+show_tides = st.checkbox("Show tidal currents")
+tide_source = None
+if show_tides:
+    tcol1, tcol2 = st.columns(2)
+    tide_source = tcol1.selectbox("Tide data source", available_sources())
+    tide_tz = tcol2.radio("Times", ["Local time", "UTC"], horizontal=True)
+
 explanation_placeholder.write(f"Speeds are in kn. The width of the wedges is proportional to how common the wind is. Winds below {cutoff_speed} knots are not displayed and the percentage of the time when the wind is below {cutoff_speed} knots is displayed in the circle in the middle of the plot.")
 
 # Create a Folium map centered on a default location
@@ -58,5 +66,21 @@ if map['last_clicked']:
         placeholder.pyplot(plt.gcf())
     else:
         placeholder.error("An error occurred. Please try a different coordinate.")
+
+    if show_tides:
+        st.subheader("Tidal currents (selected day ± 3 days)")
+        try:
+            with st.spinner('Computing tides...'):
+                tides = get_tides(tide_source, data[0], data[1], selected_date, tide_tz == "Local time")
+                compass_fig, tide_fig = tide_figures(tides)
+            c1, c2 = st.columns([1, 3])
+            c1.pyplot(compass_fig)
+            c2.pyplot(tide_fig)
+            st.caption(f"Source: {tides['source']}. Red arrow: flood current direction. "
+                       f"Blue arrow: ebb current direction. Times in {tides['tzlabel']}.")
+        except NoDataError as e:
+            st.info(f"{tide_source} does not provide tidal current data at or near this location. {e}")
+        except Exception as e:
+            st.error(f"Could not compute tidal currents: {e}")
 
 st.write("App by [Francesco Santini](https://francescosantini.com/). Code on [Github](https://github.com/fsantini/pymeteo).")

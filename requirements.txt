@@ -6,3 +6,6 @@ meteostat==2.1.4
 streamlit
 folium
 streamlit_folium
+
+pyTMD
+timezonefinder
