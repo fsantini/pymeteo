@@ -17,8 +17,6 @@ explanation_placeholder = st.empty()
 def get_pos(lat,lng):
     return lat,lng
 
-placeholder = st.empty()
-
 # Get today's date
 today = date.today()
 
@@ -53,6 +51,9 @@ world_map = folium.Map(location=map_center, zoom_start=zoom_level)
 world_map.add_child(folium.LatLngPopup())
 # Display the map using Streamlit's folium_static function
 map = st_folium(world_map, height=300, width=600)
+
+# wind plot goes right below the map, above the tidal section
+placeholder = st.empty()
 
 if map['last_clicked']:
     data = get_pos(map['last_clicked']['lat'],map['last_clicked']['lng'])
