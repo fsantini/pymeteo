@@ -36,9 +36,10 @@ with col2:
 show_tides = st.checkbox("Show tidal currents")
 tide_source = None
 if show_tides:
-    tcol1, tcol2 = st.columns(2)
+    tcol1, tcol2, tcol3 = st.columns(3)
     tide_source = tcol1.selectbox("Tide data source", available_sources())
     tide_tz = tcol2.radio("Times", ["Local time", "UTC"], horizontal=True)
+    height_unit = tcol3.radio("Tide height", ["m", "ft"], horizontal=True)
 
 explanation_placeholder.write(f"Speeds are in kn. The width of the wedges is proportional to how common the wind is. Winds below {cutoff_speed} knots are not displayed and the percentage of the time when the wind is below {cutoff_speed} knots is displayed in the circle in the middle of the plot.")
 
@@ -72,7 +73,7 @@ if map['last_clicked']:
         try:
             with st.spinner('Computing tides...'):
                 tides = get_tides(tide_source, data[0], data[1], selected_date, tide_tz == "Local time")
-                compass_fig, tide_fig = tide_figures(tides)
+                compass_fig, tide_fig = tide_figures(tides, height_unit)
             c1, c2 = st.columns([1, 3])
             c1.pyplot(compass_fig)
             c2.pyplot(tide_fig)
