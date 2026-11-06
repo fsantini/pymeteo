@@ -11,6 +11,9 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from meteostat import Point, hourly, interpolate, stations
 import math
+import json
+import urllib.parse
+import urllib.request
 import numpy as np
 
 
@@ -27,9 +30,28 @@ desired_date = datetime(current_year, month, day)
 coords = coordinates.split(',')
 coords = [float(c.strip()) for c in coords]
 
-def plot_winds(coords, desired_date, min_speed = 5):
+METEOSTAT = "Meteostat"
+OPENMETEO = "Open-Meteo"
+WEATHER_SOURCES = [OPENMETEO, METEOSTAT]
+
+
+def _openmeteo_year(lat, lon, start, end):
+    """Hourly wind (km/h), direction, temperature and precipitation from Open-Meteo."""
+    q = urllib.parse.urlencode(dict(
+        latitude=lat, longitude=lon, start_date=start.strftime('%Y-%m-%d'),
+        end_date=end.strftime('%Y-%m-%d'), wind_speed_unit='kmh', timezone='GMT',
+        hourly='wind_speed_10m,wind_direction_10m,temperature_2m,precipitation'))
+    with urllib.request.urlopen('https://archive-api.open-meteo.com/v1/archive?' + q, timeout=60) as r:
+        h = json.load(r)['hourly']
+    nan = lambda v: math.nan if v is None else v
+    return ([nan(v) for v in h['wind_speed_10m']], [nan(v) for v in h['wind_direction_10m']],
+            [v for v in h['temperature_2m'] if v is not None],
+            [v for v in h['precipitation'] if v is not None])
+
+
+def plot_winds(coords, desired_date, min_speed = 5, source = OPENMETEO):
     location = Point(coords[0], coords[1], 0)
-    nearby_stations = stations.nearby(location, radius=100000, limit=10)
+    nearby_stations = stations.nearby(location, radius=100000, limit=10) if source == METEOSTAT else None
     now = datetime.now()
     current_year = now.year
 
@@ -61,6 +83,15 @@ def plot_winds(coords, desired_date, min_speed = 5):
     precip = []
 
     for year in range(starting_year-average_years+1, starting_year+1):
+        if source == OPENMETEO:
+            midpoint = datetime(year, month, day)
+            ws, wd, t, p = _openmeteo_year(coords[0], coords[1], midpoint - timedelta(days=3),
+                                           midpoint + timedelta(days=3))
+            wind_speeds.extend(ws)
+            wind_dirs.extend(wd)
+            temps.extend(t)
+            precip.extend(p)
+            continue
         d = get_data_for_year(year, month, day, location, nearby_stations)
         wind_speeds.extend(d['wspd'] if 'wspd' in d else [math.nan]*len(d))
         wind_dirs.extend(d['wdir'] if 'wdir' in d else [math.nan]*len(d))
@@ -275,7 +306,7 @@ def plot_winds(coords, desired_date, min_speed = 5):
              va='bottom',
              transform=f.transFigure)
     plt.text(0.5,0.9,
-             f'Week of {months[desired_date.month-1]} {desired_date.day}, Loc: {location.latitude:.2f}, {location.longitude:.2f}',
+             f'Week of {months[desired_date.month-1]} {desired_date.day}, Loc: {location.latitude:.2f}, {location.longitude:.2f} ({source})',
              ha='center',
              va='bottom',
              transform=f.transFigure)

@@ -4,13 +4,13 @@ from matplotlib import pyplot as plt
 from streamlit_folium import st_folium
 import datetime
 from datetime import date
-from meteo import plot_winds
+from meteo import plot_winds, WEATHER_SOURCES
 from tides import tide_figures, get_tides, available_sources, NoDataError
 
 st.title("Click on the map to get the typical winds")
 
 st.write("This app displays the typical winds for a given location and date. Click on the map to select a location, then choose a date from the calendar. The app will display the typical wind speeds and directions for that location and date.")
-st.write("Data from meteostat. Map from Folium (OpenStreetMap).")
+st.write("Weather data from Meteostat or Open-Meteo. Map from Folium (OpenStreetMap).")
 
 explanation_placeholder = st.empty()
 
@@ -41,6 +41,8 @@ if show_tides:
     tide_tz = tcol2.radio("Times", ["Local time", "UTC"], horizontal=True)
     height_unit = tcol3.radio("Tide height", ["m", "ft"], horizontal=True)
 
+weather_source = st.selectbox("Weather data source", WEATHER_SOURCES)
+
 explanation_placeholder.write(f"Speeds are in kn. The width of the wedges is proportional to how common the wind is. Winds below {cutoff_speed} knots are not displayed and the percentage of the time when the wind is below {cutoff_speed} knots is displayed in the circle in the middle of the plot.")
 
 # Create a Folium map centered on a default location
@@ -58,7 +60,7 @@ if map['last_clicked']:
     with placeholder, st.spinner('Loading data...'):
         success = False
         try:
-            plot_winds(data, selected_date, cutoff_speed)
+            plot_winds(data, selected_date, cutoff_speed, weather_source)
             success = True
         except:
             pass
