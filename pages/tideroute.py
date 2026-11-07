@@ -429,9 +429,9 @@ def departure_figure(ok, top, use_local):
         xaxis=dict(gridcolor="rgba(128,128,128,0.25)", tickformatstops=[
             dict(dtickrange=[None, 86400000], value="%H:%M<br>%a %d"),
             dict(dtickrange=[86400000, None], value="%a %d %b")]),
-        yaxis=dict(title="Duration (h)", gridcolor="rgba(128,128,128,0.25)"),
+        yaxis=dict(title="Duration (h)", gridcolor="rgba(128,128,128,0.25)", fixedrange=True),
         legend=dict(orientation="h", y=-0.2, x=0.5, xanchor="center"),
-        margin=dict(l=10, r=10, t=60, b=10), height=380, dragmode="pan", hovermode="closest")
+        margin=dict(l=10, r=10, t=60, b=10), height=380, dragmode="zoom", hovermode="closest")
     return fig
 
 

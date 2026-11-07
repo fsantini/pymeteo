@@ -24,7 +24,9 @@ NOAA_MAX_CURRENT_KM = 30.0
 NOAA_MAX_TIDE_KM = 100.0
 KN_PER_CMS = 0.0194384  # cm/s -> knots
 # touch-friendly interactive charts: pinch to zoom, drag to pan, double-tap to reset
-PLOT_CONFIG = dict(displaylogo=False, scrollZoom=True, doubleClick="reset",
+# NB: Plotly only zooms on a two-finger pinch in dragmode "zoom" (in "pan" the pinch just pans).
+# Panning is then done with the modebar's Pan button, which is always shown (no hover on touch screens).
+PLOT_CONFIG = dict(displaylogo=False, scrollZoom=True, doubleClick="reset", displayModeBar=True,
                    modeBarButtonsToRemove=["select2d", "lasso2d"], toImageButtonOptions=dict(scale=2))
 
 
@@ -505,11 +507,12 @@ def tides_plotly(times, speed, height, extrema, tzlabel="UTC", height_unit="m"):
         xaxis=dict(gridcolor="rgba(128,128,128,0.25)", tickformatstops=[  # hours once zoomed in, days otherwise
             dict(dtickrange=[None, 86400000], value="%H:%M<br>%a %d"),
             dict(dtickrange=[86400000, None], value="%a %d %b")]),
-        yaxis=dict(title="Current (kn) + flood / − ebb", range=[ys.min() - pad, ys.max() + pad],
+        yaxis=dict(title="Current (kn) + flood / − ebb", range=[ys.min() - pad, ys.max() + pad], fixedrange=True,
                    zeroline=True, gridcolor="rgba(128,128,128,0.25)"),
-        yaxis2=dict(title=f"Height ({height_unit})", overlaying="y", side="right", showgrid=False, color="gray"),
+        yaxis2=dict(title=f"Height ({height_unit})", overlaying="y", side="right", showgrid=False, color="gray",
+                    fixedrange=True),
         legend=dict(orientation="h", y=-0.2, x=0.5, xanchor="center"),
-        margin=dict(l=10, r=10, t=60, b=10), height=420, dragmode="pan", hovermode="closest")
+        margin=dict(l=10, r=10, t=60, b=10), height=420, dragmode="zoom", hovermode="closest")
     return fig
 
 

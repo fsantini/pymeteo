@@ -178,7 +178,7 @@ def wind_figures(w):
         fig.update_xaxes(range=[-lim, lim], visible=False, constrain="domain")
         fig.update_yaxes(range=[-lim, lim], visible=False, scaleanchor="x", scaleratio=1)
         fig.update_layout(title=dict(text=name, x=0.02, xanchor="left", font=dict(size=16)), margin=dict(l=5, r=5, t=50, b=5),
-                          height=420, dragmode="pan", plot_bgcolor="white")
+                          height=420, dragmode="zoom", plot_bgcolor="white")
         figs.append(fig)
     return figs
 
