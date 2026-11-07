@@ -43,13 +43,21 @@ def point_at(pts, legs, d):
         d -= leg
 
 
+def bearing_deg(p1, p2):
+    """Initial great-circle bearing from p1 to p2, degrees clockwise from north."""
+    la1, lo1, la2, lo2 = map(math.radians, (*p1, *p2))
+    y = math.sin(lo2 - lo1) * math.cos(la2)
+    x = math.cos(la1) * math.sin(la2) - math.sin(la1) * math.cos(la2) * math.cos(lo2 - lo1)
+    return math.degrees(math.atan2(y, x)) % 360
+
+
 def distance_nm(p1, p2):
     la1, lo1, la2, lo2 = map(math.radians, (*p1, *p2))
     h = math.sin((la2 - la1) / 2) ** 2 + math.cos(la1) * math.cos(la2) * math.sin((lo2 - lo1) / 2) ** 2
     return 2 * R_NM * math.asin(math.sqrt(h))
 
 
-def arrow(m, lat, lon, e, n, scale, tooltip, label=""):
+def arrow(m, lat, lon, e, n, scale, tooltip, label="", color="red"):
     """Draw an arrow at (lat, lon) for a current (e, n) in kn; scale = degrees of latitude per knot."""
     spd = math.hypot(e, n)
     c = math.cos(math.radians(lat)) or 1e-6
@@ -61,7 +69,7 @@ def arrow(m, lat, lon, e, n, scale, tooltip, label=""):
         folium.Marker((lat, lon), icon=folium.DivIcon(html=html, icon_size=(60, 26),
                                                       icon_anchor=(-5, -4))).add_to(m)
     if spd < 0.02:
-        folium.CircleMarker((lat, lon), radius=5, color="red", fill=False, tooltip=tooltip).add_to(m)
+        folium.CircleMarker((lat, lon), radius=5, color=color, fill=False, tooltip=tooltip).add_to(m)
         return
     ux, uy = e / spd, n / spd  # unit vector (east, north)
     length = spd * scale
@@ -72,8 +80,8 @@ def arrow(m, lat, lon, e, n, scale, tooltip, label=""):
         a = math.radians(ang)
         bx, by = ux * math.cos(a) - uy * math.sin(a), ux * math.sin(a) + uy * math.cos(a)
         pts.append((tip[0] + by * head, tip[1] + bx * head / c))
-    folium.PolyLine([(lat, lon), tip], color="red", weight=3, tooltip=tooltip).add_to(m)
-    folium.PolyLine([pts[0], tip, pts[1]], color="red", weight=3, tooltip=tooltip).add_to(m)
+    folium.PolyLine([(lat, lon), tip], color=color, weight=3, tooltip=tooltip).add_to(m)
+    folium.PolyLine([pts[0], tip, pts[1]], color=color, weight=3, tooltip=tooltip).add_to(m)
 
 
 # ---- inputs ----
@@ -82,10 +90,13 @@ if "route_pts" not in st.session_state:
     st.session_state.last_click = None
 pts = st.session_state.route_pts
 
+MODES = ["Constant VMG (speed over ground)", "Constant propulsion (speed through water)"]
+mode = st.radio("Mode", MODES, horizontal=True)
+propulsion = mode == MODES[1]
 c1, c2, c3 = st.columns(3)
 dep_date = c1.date_input("Departure date", value=datetime.now().date())
 dep_time = c2.time_input("Departure time", value=time(9, 0), step=900)
-speed_kn = c3.number_input("Boat speed (kn)", min_value=0.5, max_value=40.0, value=5.0, step=0.5)
+speed_kn = c3.number_input("Propulsion speed through water (kn)" if propulsion else "Boat speed over ground (kn)", min_value=0.5, max_value=40.0, value=5.0, step=0.5)
 c4, c5, c6 = st.columns(3)
 n_points = c4.number_input("Route points (start, waypoints, end)", min_value=2, max_value=12, value=2, step=1)
 n_steps = c5.slider("Number of steps", 2, 60, 10)
@@ -105,7 +116,88 @@ if st.button("Reset points"):
     clear_route()
     st.rerun()
 
-def compute(pts, dep_date, dep_time, speed_kn, n_steps, source):
+def compute_propulsion(pts, dep_date, dep_time, speed_kn, n_steps, source):
+    """Constant propulsion speed through the water; heading corrected for the current.
+
+    Walks along the route step by step: at each point the current at the time of passage gives the
+    cross-track component to cancel (course correction) and the along-track component that adds to
+    the along-track part of the propulsion, i.e. the VMG used to reach the next point.
+    """
+    legs = [distance_nm(a, b) for a, b in zip(pts, pts[1:])]
+    total = sum(legs)
+    tz = local_timezone(*pts[0])
+    dep = datetime.combine(dep_date, dep_time, tzinfo=tz)
+    # step points plus the intermediate waypoints, so every segment lies on a single leg
+    cum = np.cumsum(legs)
+    marks = {round(total * i / n_steps, 6): None for i in range(n_steps + 1)}
+    for k in range(1, len(pts) - 1):
+        marks[round(float(cum[k - 1]), 6)] = pts[k]
+    dists = sorted(marks)
+    places = [marks[d] or point_at(pts, legs, d) for d in dists]
+    res = dict(pts=list(pts), arrows=[], props=[], rows=[], error=None, info=None, summary="")
+    t, missing = dep, 0
+    # one scale for both arrows; the propulsion arrow (largest) spans about one step
+    scale = 0.9 * (total / n_steps / 60.0) / max(speed_kn, 0.5)
+    try:
+        for i, ((lat, lon), d) in enumerate(zip(places, dists)):
+            utc = np.datetime64(t.astimezone(ZoneInfo("UTC")).replace(tzinfo=None))
+            v = current_vectors(source, [lat], [lon], [utc])[0]
+            if v is None:
+                missing += 1
+            ce, cn = v or (0.0, 0.0)
+            cspd, cbrg = math.hypot(ce, cn), math.degrees(math.atan2(ce, cn)) % 360
+            row = {"Distance (nm)": round(d, 1), "Time (local)": f"{t:%d %b %H:%M}",
+                   "Current (kn)": round(cspd, 2), "Towards (°)": round(cbrg)}
+            if v is not None:
+                res["arrows"].append((lat, lon, ce, cn, scale,
+                                      f"{t:%d %b %H:%M} — current {cspd:.2f} kn towards {cbrg:.0f}°",
+                                      f"{t:%H:%M}<br>{cspd:.1f} kn"))
+            if i == len(places) - 1:
+                res["rows"].append(row)
+                break
+            trk = bearing_deg((lat, lon), places[i + 1])
+            tx, ty = math.sin(math.radians(trk)), math.cos(math.radians(trk))  # track unit (E, N)
+            along = ce * tx + cn * ty
+            cross = ce * ty - cn * tx  # component to the right of the track
+            where = f"at {lat:.3f}, {lon:.3f} ({t:%d %b %H:%M}, current {cspd:.1f} kn towards {cbrg:.0f}°)"
+            if abs(cross) >= speed_kn:
+                raise ValueError(f"Propulsion speed {speed_kn:g} kn is too low to hold the course {where}: "
+                                 f"the cross-current is {abs(cross):.1f} kn.")
+            w_along, w_cross = math.sqrt(speed_kn ** 2 - cross ** 2), -cross
+            vmg = w_along + along
+            if vmg <= 0:
+                raise ValueError(f"Propulsion speed {speed_kn:g} kn is too low {where}: "
+                                 f"VMG is {vmg:.2f} kn (<= 0), the boat cannot make progress.")
+            # propulsion velocity relative to the water (E, N) and heading
+            pe, pn = w_along * tx + w_cross * ty, w_along * ty - w_cross * tx
+            head = math.degrees(math.atan2(pe, pn)) % 360
+            corr = (head - trk + 180) % 360 - 180
+            res["props"].append((lat, lon, pe, pn, scale,
+                                 f"Propulsion {speed_kn:g} kn, heading {head:.0f}° "
+                                 f"(correction {corr:+.0f}° from track {trk:.0f}°), VMG {vmg:.2f} kn"))
+            row.update({"Heading (°)": round(head), "Correction (°)": round(corr), "VMG (kn)": round(vmg, 2)})
+            res["rows"].append(row)
+            t += timedelta(hours=(dists[i + 1] - d) / vmg)
+        res["summary"] = (f"Route length: {total:.1f} nm — duration {(t - dep).total_seconds() / 3600:.1f} h — "
+                          f"times in local time ({tz.key}).")
+        if missing:
+            res["info"] = f"{source} has no current data at {missing} point(s): zero current assumed there."
+    except NoDataError as e:
+        res["info"] = f"{source} does not provide tidal current data for this route. {e}"
+    except ValueError as e:
+        res["error"] = str(e)
+    except Exception as e:
+        res["error"] = f"Could not compute tidal currents: {e}"
+    return res
+
+
+def compute(pts, dep_date, dep_time, speed_kn, n_steps, source, propulsion=False):
+    if propulsion:
+        return compute_propulsion(pts, dep_date, dep_time, speed_kn, n_steps, source)
+    return compute_vmg(pts, dep_date, dep_time, speed_kn, n_steps, source)
+
+
+def compute_vmg(pts, dep_date, dep_time, speed_kn, n_steps, source):
     """Tidal currents along the route; returns a dict with arrows, table rows and a message."""
     legs = [distance_nm(a, b) for a, b in zip(pts, pts[1:])]
     total = sum(legs)
@@ -144,7 +236,7 @@ def compute(pts, dep_date, dep_time, speed_kn, n_steps, source):
 
 
 # ---- recalculation ----
-params = (tuple(pts), dep_date, dep_time, speed_kn, n_steps, source)
+params = (tuple(pts), dep_date, dep_time, speed_kn, n_steps, source, propulsion)
 ready = len(pts) == n_points
 applied = st.session_state.get("applied")
 # fixed slots keep the map at the same position in the page, so it is never remounted
@@ -184,6 +276,8 @@ if res:
     folium.PolyLine(res["pts"], color="blue", weight=2, dash_array="6").add_to(m)
     for a in res["arrows"]:
         arrow(m, *a[:5], tooltip=a[5], label=a[6])
+    for a in res.get("props", []):
+        arrow(m, *a[:5], tooltip=a[5], color="green")
 if ready:
     lats, lons = [p[0] for p in pts], [p[1] for p in pts]
     m.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]], padding=(40, 40))
@@ -215,4 +309,5 @@ if click:
 
 if res and res["rows"]:
     st.dataframe(res["rows"], hide_index=True)
-    st.caption("Arrow: direction the water flows towards; length proportional to current speed.")
+    st.caption("Red arrow: direction the water flows towards. "
+               + ("Green arrow: propulsion velocity through the water (heading). Both to the same scale." if res.get("props") else "Length proportional to current speed."))
