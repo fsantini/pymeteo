@@ -57,6 +57,15 @@ def distance_nm(p1, p2):
     return 2 * R_NM * math.asin(math.sqrt(h))
 
 
+def arrival_label(m, lat, lon, text):
+    """Bold label above the final point (the step label sits below-right of it)."""
+    html = ('<div style="font-size:12px;font-weight:700;white-space:nowrap;color:#7a0000;'
+            'text-shadow:-1px -1px 0 #fff,1px -1px 0 #fff,-1px 1px 0 #fff,1px 1px 0 #fff;">'
+            f'{text}</div>')
+    folium.Marker((lat, lon), icon=folium.DivIcon(html=html, icon_size=(120, 16),
+                                                  icon_anchor=(-10, 30))).add_to(m)
+
+
 def arrow(m, lat, lon, e, n, scale, tooltip, label="", color="red"):
     """Draw an arrow at (lat, lon) for a current (e, n) in kn; scale = degrees of latitude per knot."""
     spd = math.hypot(e, n)
@@ -93,6 +102,8 @@ pts = st.session_state.route_pts
 MODES = ["Constant VMG (speed over ground)", "Constant propulsion (speed through water)"]
 mode = st.radio("Mode", MODES, horizontal=True)
 propulsion = mode == MODES[1]
+use_local = st.radio("Times (departure input and results)", ["Local time (at the start point)", "UTC"],
+                     horizontal=True).startswith("Local")
 c1, c2, c3 = st.columns(3)
 dep_date = c1.date_input("Departure date", value=datetime.now().date(), key="dep_date")
 dep_time = c2.time_input("Departure time", value=time(9, 0), step=900, key="dep_time")
@@ -133,11 +144,15 @@ def clear_route():
     st.session_state.map_gen = st.session_state.get("map_gen", 0) + 1  # new map key = fresh map
 
 
-if st.button("Reset points"):
+rb1, rb2, _ = st.columns([1, 1, 3])
+if rb1.button("Reset points"):
     clear_route()
     st.rerun()
+if rb2.button("Reverse route", disabled=len(pts) < 2):
+    st.session_state.route_pts = pts[::-1]  # start <-> end, waypoints in reverse order
+    st.rerun()
 
-def compute_propulsion(pts, dep_date, dep_time, speed_kn, n_steps, source):
+def compute_propulsion(pts, dep_date, dep_time, speed_kn, n_steps, source, use_local=True):
     """Constant propulsion speed through the water; heading corrected for the current.
 
     Walks along the route step by step: at each point the current at the time of passage gives the
@@ -146,7 +161,9 @@ def compute_propulsion(pts, dep_date, dep_time, speed_kn, n_steps, source):
     """
     legs = [distance_nm(a, b) for a, b in zip(pts, pts[1:])]
     total = sum(legs)
-    tz = local_timezone(*pts[0])
+    tz = local_timezone(*pts[0]) if use_local else ZoneInfo("UTC")
+    tcol = "Time (local)" if use_local else "Time (UTC)"
+    tlabel = f"local time, {tz.key}" if use_local else "UTC"
     dep = datetime.combine(dep_date, dep_time, tzinfo=tz)
     # step points plus the intermediate waypoints, so every segment lies on a single leg
     cum = np.cumsum(legs)
@@ -155,7 +172,7 @@ def compute_propulsion(pts, dep_date, dep_time, speed_kn, n_steps, source):
         marks[round(float(cum[k - 1]), 6)] = pts[k]
     dists = sorted(marks)
     places = [marks[d] or point_at(pts, legs, d) for d in dists]
-    res = dict(pts=list(pts), arrows=[], props=[], rows=[], error=None, info=None, summary="", duration_h=None)
+    res = dict(pts=list(pts), arrows=[], props=[], rows=[], error=None, info=None, summary="", duration_h=None, arrival=None)
     t, missing, filled, last_valid = dep, 0, 0, None
     # one scale for both arrows; the propulsion arrow (largest) spans about one step
     scale = 0.7 * (total / n_steps / 60.0) / max(speed_kn, 0.5)
@@ -185,7 +202,7 @@ def compute_propulsion(pts, dep_date, dep_time, speed_kn, n_steps, source):
                     missing += 1
             ce, cn = v or (0.0, 0.0)
             cspd, cbrg = math.hypot(ce, cn), math.degrees(math.atan2(ce, cn)) % 360
-            row = {"Distance (nm)": round(d, 1), "Time (local)": f"{t:%d %b %H:%M}",
+            row = {"Distance (nm)": round(d, 1), tcol: f"{t:%d %b %H:%M}",
                    "Current (kn)": round(cspd, 2), "Towards (°)": round(cbrg)}
             if v is not None:
                 res["arrows"].append((lat, lon, ce, cn, scale,
@@ -219,8 +236,9 @@ def compute_propulsion(pts, dep_date, dep_time, speed_kn, n_steps, source):
             res["rows"].append(row)
             t += timedelta(hours=(dists[i + 1] - d) / vmg)
         res["summary"] = (f"Route length: {total:.1f} nm — duration {(t - dep).total_seconds() / 3600:.1f} h — "
-                          f"times in local time ({tz.key}).")
+                          f"times in {tlabel}.")
         res["duration_h"] = (t - dep).total_seconds() / 3600
+        res["arrival"] = (*places[-1], f"Arrival {t:%d %b %H:%M}")
         notes = []
         if filled:
             notes.append(f"{filled} point(s) without {source} data use a current interpolated between the "
@@ -238,17 +256,19 @@ def compute_propulsion(pts, dep_date, dep_time, speed_kn, n_steps, source):
     return res
 
 
-def compute(pts, dep_date, dep_time, speed_kn, n_steps, source, propulsion=False):
+def compute(pts, dep_date, dep_time, speed_kn, n_steps, source, propulsion=False, use_local=True):
     if propulsion:
-        return compute_propulsion(pts, dep_date, dep_time, speed_kn, n_steps, source)
-    return compute_vmg(pts, dep_date, dep_time, speed_kn, n_steps, source)
+        return compute_propulsion(pts, dep_date, dep_time, speed_kn, n_steps, source, use_local)
+    return compute_vmg(pts, dep_date, dep_time, speed_kn, n_steps, source, use_local)
 
 
-def compute_vmg(pts, dep_date, dep_time, speed_kn, n_steps, source):
+def compute_vmg(pts, dep_date, dep_time, speed_kn, n_steps, source, use_local=True):
     """Tidal currents along the route; returns a dict with arrows, table rows and a message."""
     legs = [distance_nm(a, b) for a, b in zip(pts, pts[1:])]
     total = sum(legs)
-    tz = local_timezone(*pts[0])
+    tz = local_timezone(*pts[0]) if use_local else ZoneInfo("UTC")
+    tcol = "Time (local)" if use_local else "Time (UTC)"
+    tlabel = f"local time, {tz.key}" if use_local else "UTC"
     dep = datetime.combine(dep_date, dep_time, tzinfo=tz)
     fr = [i / n_steps for i in range(n_steps + 1)]
     dists = [total * f for f in fr]
@@ -256,8 +276,9 @@ def compute_vmg(pts, dep_date, dep_time, speed_kn, n_steps, source):
     when = [dep + timedelta(hours=d / speed_kn) for d in dists]
     utc = np.array([np.datetime64(w.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)) for w in when])
     res = dict(pts=list(pts), arrows=[], rows=[], error=None, info=None,
+               arrival=(*places[-1], f"Arrival {when[-1]:%d %b %H:%M}"),
                summary=f"Route length: {total:.1f} nm — duration {total / speed_kn:.1f} h — "
-                       f"times in local time ({tz.key}).")
+                       f"times in {tlabel}.")
     try:
         vec = current_vectors(source, [p[0] for p in places], [p[1] for p in places], utc)
         valid = [v for v in vec if v]
@@ -280,7 +301,7 @@ def compute_vmg(pts, dep_date, dep_time, speed_kn, n_steps, source):
                                   f"{w:%d %b %H:%M} — {mark}{spd:.2f} kn towards {brg:.0f}°"
                                   + (" (interpolated)" if mark else ""),
                                   f"{w:%H:%M}<br>{mark}{spd:.1f} kn"))
-            res["rows"].append({"Distance (nm)": round(d, 1), "Time (local)": f"{w:%d %b %H:%M}",
+            res["rows"].append({"Distance (nm)": round(d, 1), tcol: f"{w:%d %b %H:%M}",
                                 "Current (kn)": round(spd, 2), "Towards (°)": round(brg)})
     except NoDataError as e:
         res["info"] = f"{source} does not provide tidal current data for this route. {e}"
@@ -290,7 +311,7 @@ def compute_vmg(pts, dep_date, dep_time, speed_kn, n_steps, source):
 
 
 # ---- recalculation ----
-params = (tuple(pts), dep_date, dep_time, speed_kn, n_steps, source, propulsion)
+params = (tuple(pts), dep_date, dep_time, speed_kn, n_steps, source, propulsion, use_local)
 ready = len(pts) == n_points
 applied = st.session_state.get("applied")
 # fixed slots keep the map at the same position in the page, so it is never remounted
@@ -330,6 +351,8 @@ if res:
     folium.PolyLine(res["pts"], color="blue", weight=2, dash_array="6").add_to(m)
     for a in res["arrows"]:
         arrow(m, *a[:5], tooltip=a[5], label=a[6])
+    if res.get("arrival"):
+        arrival_label(m, *res["arrival"])
     for a in res.get("props", []):
         arrow(m, *a[:5], tooltip=a[5], color="green")
 if ready:
@@ -368,8 +391,8 @@ if res and res["rows"]:
 
 
 # ---- best departure time (constant propulsion only) ----
-def best_departure(pts, first_dep, window_h, step_min, speed_kn, n_steps, source, progress=None):
-    """Try departures every step_min minutes from first_dep (naive local datetime) for window_h hours.
+def best_departure(pts, first_dep, window_h, step_min, speed_kn, n_steps, source, use_local=True, progress=None):
+    """Try departures every step_min minutes from first_dep (naive datetime in the chosen time zone) for window_h hours.
 
     Returns a list of dicts (departure, duration_h or None, error). Each trial is a full
     constant-propulsion simulation, so the current is always taken at the actual passage times.
@@ -378,7 +401,7 @@ def best_departure(pts, first_dep, window_h, step_min, speed_kn, n_steps, source
     out = []
     for k in range(n):
         dt = first_dep + timedelta(minutes=k * step_min)
-        r = compute_propulsion(pts, dt.date(), dt.time(), speed_kn, n_steps, source)
+        r = compute_propulsion(pts, dt.date(), dt.time(), speed_kn, n_steps, source, use_local)
         out.append(dict(departure=dt, duration_h=r["duration_h"], error=r["error"]))
         if progress:
             progress((k + 1) / n)
@@ -398,8 +421,8 @@ if propulsion and ready:
             bar = st.progress(0.0)
             first = datetime.combine(dep_date, dep_time)
             st.session_state.best = dict(
-                trials=best_departure(pts, first, window_h, step_min, speed_kn, n_steps, source, bar.progress),
-                key=(tuple(pts), first, window_h, step_min, speed_kn, n_steps, source))
+                trials=best_departure(pts, first, window_h, step_min, speed_kn, n_steps, source, use_local, bar.progress),
+                key=(tuple(pts), first, window_h, step_min, speed_kn, n_steps, source, use_local), use_local=use_local)
             bar.empty()
         best = st.session_state.get("best")
         if best:
@@ -417,5 +440,5 @@ if propulsion and ready:
                 if len(ok) < len(best["trials"]):
                     st.caption(f"{len(best['trials']) - len(ok)} departure(s) skipped: propulsion too low for the current.")
                 st.line_chart({"Duration (h)": {t["departure"]: t["duration_h"] for t in ok}})
-            st.caption("Departure times are local time at the start point. Results are not updated "
+            st.caption(f"Departure times are in {'local time at the start point' if best.get('use_local', True) else 'UTC'}. Results are not updated "
                        "automatically when parameters change: run the search again.")
