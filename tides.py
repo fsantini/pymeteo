@@ -23,6 +23,9 @@ NOAA = "NOAA CO-OPS API"
 NOAA_MAX_CURRENT_KM = 30.0
 NOAA_MAX_TIDE_KM = 100.0
 KN_PER_CMS = 0.0194384  # cm/s -> knots
+# touch-friendly interactive charts: pinch to zoom, drag to pan, double-tap to reset
+PLOT_CONFIG = dict(displaylogo=False, scrollZoom=True, doubleClick="reset",
+                   modeBarButtonsToRemove=["select2d", "lasso2d"], toImageButtonOptions=dict(scale=2))
 
 
 def model_directory():
@@ -431,6 +434,88 @@ def plot_tides(times, speed, height, extrema, tzlabel="UTC", height_unit="m"):
     ax.set_title(f"Tidal current and tide height — times {tzlabel}\n(black ticks: zero current)", fontsize=10)
     fig.tight_layout()
     return fig
+
+
+def compass_plotly(flood_bearing, ebb_bearing):
+    """Interactive compass with the flood (red) and ebb (blue) directions."""
+    import plotly.graph_objects as go
+    fig = go.Figure()
+    for name, brg, color in ((f"Flood {flood_bearing:.0f}°", flood_bearing, "red"),
+                             (f"Ebb {ebb_bearing:.0f}°", ebb_bearing, "blue")):
+        fig.add_trace(go.Scatterpolar(
+            theta=[brg, brg], r=[0, 1], mode="lines+markers", name=name, line=dict(color=color, width=4),
+            marker=dict(symbol="arrow", size=[0, 18], angleref="previous", color=color)))
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=False, range=[0, 1.05]),
+                   angularaxis=dict(rotation=90, direction="clockwise", tickmode="array",
+                                    tickvals=[0, 90, 180, 270], ticktext=["N", "E", "S", "W"])),
+        legend=dict(orientation="h", y=-0.05, x=0.5, xanchor="center"),
+        margin=dict(l=20, r=20, t=20, b=20), height=320, dragmode="pan")
+    return fig
+
+
+def tides_plotly(times, speed, height, extrema, tzlabel="UTC", height_unit="m"):
+    """Interactive tidal current (red flood / blue ebb) and tide height time series."""
+    import plotly.graph_objects as go
+    secs = times.astype("datetime64[s]").astype("int64").astype(float)
+    kn = np.asarray(speed, dtype=float) * KN_PER_CMS
+    xs, ys = [secs[0]], [kn[0]]
+    for i in range(1, len(secs)):  # insert zero crossings so colours change exactly at zero
+        if kn[i - 1] * kn[i] < 0:
+            f = kn[i - 1] / (kn[i - 1] - kn[i])
+            xs.append(secs[i - 1] + f * (secs[i] - secs[i - 1]))
+            ys.append(0.0)
+        xs.append(secs[i])
+        ys.append(kn[i])
+    xs, ys = np.array(xs), np.array(ys)
+    dt = lambda a: np.asarray(a).astype("int64").astype("datetime64[s]")
+    fig = go.Figure()
+    if height is not None:
+        h = np.asarray(height) * (3.28084 if height_unit == "ft" else 1.0)
+        fig.add_trace(go.Scatter(x=dt(secs), y=h, name=f"Tide height ({height_unit})", yaxis="y2",
+                                 line=dict(color="gray", width=1.2), opacity=0.8,
+                                 hovertemplate=f"%{{y:.2f}} {height_unit}<extra>height</extra>"))
+    fig.add_trace(go.Scatter(x=dt(xs), y=np.where(ys >= 0, ys, np.nan), name="Flood", line=dict(color="red", width=2),
+                             hovertemplate="%{y:.2f} kn<extra>flood</extra>"))
+    fig.add_trace(go.Scatter(x=dt(xs), y=np.where(ys <= 0, ys, np.nan), name="Ebb", line=dict(color="blue", width=2),
+                             hovertemplate="%{y:.2f} kn<extra>ebb</extra>"))
+    ex = np.asarray(extrema, dtype=int)
+    if len(ex):
+        fig.add_trace(go.Scatter(
+            x=dt(secs[ex]), y=kn[ex], mode="markers+text", showlegend=False,
+            customdata=[f"{abs(kn[i]):.2f} kn at {dt(secs[i]).astype(object):%H:%M}" for i in ex],
+            hovertemplate="%{customdata}<extra></extra>",
+            marker=dict(color=["red" if kn[i] >= 0 else "blue" for i in ex], size=6),
+            text=[f"{abs(kn[i]):.1f} kn<br>{dt(secs[i]).astype(object):%H:%M}" for i in ex],
+            textposition=["top center" if kn[i] >= 0 else "bottom center" for i in ex],
+            textfont=dict(size=12, color=["red" if kn[i] >= 0 else "blue" for i in ex])))
+    zs = find_zeros(speed)
+    if zs:
+        zt = [secs[int(np.floor(z))] + (z - np.floor(z)) * (secs[min(int(np.floor(z)) + 1, len(secs) - 1)] - secs[int(np.floor(z))])
+              for z in zs]
+        fig.add_trace(go.Scatter(x=dt(zt), y=[0] * len(zt), mode="markers+text", name="Zero current (slack)",
+                                 marker=dict(symbol="line-ns-open", color="black", size=10, line=dict(width=1.5)),
+                                 hovertemplate="slack %{x|%H:%M}<extra></extra>"))
+        for z in zt:  # scatter text cannot be rotated: use annotations, vertical and below the zero line
+            fig.add_annotation(x=dt(z), y=0, text=f"{dt(z).astype(object):%H:%M}", textangle=-90,
+                               showarrow=False, yanchor="top", yshift=-8, font=dict(size=12, color="black"))
+    pad = 0.3 * (ys.max() - ys.min() or 1)
+    fig.update_layout(
+        title=dict(text=f"Tidal current and tide height — {tzlabel}", x=0.01, xanchor="left", font=dict(size=13)),
+        xaxis=dict(gridcolor="rgba(128,128,128,0.25)", tickformatstops=[  # hours once zoomed in, days otherwise
+            dict(dtickrange=[None, 86400000], value="%H:%M<br>%a %d"),
+            dict(dtickrange=[86400000, None], value="%a %d %b")]),
+        yaxis=dict(title="Current (kn) + flood / − ebb", range=[ys.min() - pad, ys.max() + pad],
+                   zeroline=True, gridcolor="rgba(128,128,128,0.25)"),
+        yaxis2=dict(title=f"Height ({height_unit})", overlaying="y", side="right", showgrid=False, color="gray"),
+        legend=dict(orientation="h", y=-0.2, x=0.5, xanchor="center"),
+        margin=dict(l=10, r=10, t=60, b=10), height=420, dragmode="pan", hovermode="closest")
+    return fig
+
+
+def tide_figures_plotly(r, height_unit="m"):
+    return (compass_plotly(r["flood_bearing"], r["ebb_bearing"]),
+            tides_plotly(r["times"], r["speed"], r["height"], r["extrema"], r["tzlabel"], height_unit))
 
 
 def tide_figures(r, height_unit="m"):

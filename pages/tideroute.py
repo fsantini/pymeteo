@@ -10,7 +10,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tides import available_sources, current_vectors, local_timezone, NoDataError  # noqa: E402
+from tides import PLOT_CONFIG, available_sources, current_vectors, local_timezone, NoDataError  # noqa: E402
 
 R_NM = 3440.065  # earth radius in nautical miles
 
@@ -100,7 +100,7 @@ if "route_pts" not in st.session_state:
 pts = st.session_state.route_pts
 
 MODES = ["Constant VMG (speed over ground)", "Constant propulsion (speed through water)"]
-mode = st.radio("Mode", MODES, horizontal=True)
+mode = st.radio("Mode", MODES, index=1, horizontal=True)
 propulsion = mode == MODES[1]
 use_local = st.radio("Times (departure input and results)", ["Local time (at the start point)", "UTC"],
                      horizontal=True).startswith("Local")
@@ -408,6 +408,33 @@ def best_departure(pts, first_dep, window_h, step_min, speed_kn, n_steps, source
     return out
 
 
+def departure_figure(ok, top, use_local):
+    """Interactive plot of the trip duration against the departure time (best one highlighted)."""
+    import plotly.graph_objects as go
+    hm = lambda h: f"{int(h)} h {round((h % 1) * 60):02d} min"
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=[t["departure"] for t in ok], y=[t["duration_h"] for t in ok], mode="lines+markers", name="Duration",
+        line=dict(color="gray", width=1.5), marker=dict(size=6, color="red"),
+        customdata=[hm(t["duration_h"]) for t in ok],
+        hovertemplate="depart %{x|%H:%M}<br>%{y:.2f} h (%{customdata})<extra></extra>"))
+    fig.add_trace(go.Scatter(
+        x=[top["departure"]], y=[top["duration_h"]], mode="markers+text", name="Best",
+        marker=dict(symbol="star", size=16, color="green"), text=[f"{top['departure']:%H:%M}"],
+        textposition="top center", textfont=dict(size=12, color="green"),
+        hovertemplate="BEST: depart %{x|%H:%M}<br>%{y:.2f} h<extra></extra>"))
+    fig.update_layout(
+        title=dict(text=f"Trip duration vs departure time — {'local time' if use_local else 'UTC'}",
+                   x=0.01, xanchor="left", font=dict(size=13)),
+        xaxis=dict(gridcolor="rgba(128,128,128,0.25)", tickformatstops=[
+            dict(dtickrange=[None, 86400000], value="%H:%M<br>%a %d"),
+            dict(dtickrange=[86400000, None], value="%a %d %b")]),
+        yaxis=dict(title="Duration (h)", gridcolor="rgba(128,128,128,0.25)"),
+        legend=dict(orientation="h", y=-0.2, x=0.5, xanchor="center"),
+        margin=dict(l=10, r=10, t=60, b=10), height=380, dragmode="pan", hovermode="closest")
+    return fig
+
+
 def use_departure(dt):
     st.session_state.dep_date, st.session_state.dep_time = dt.date(), dt.time()
 
@@ -439,6 +466,7 @@ if propulsion and ready:
                 st.button("Use this departure time", on_click=use_departure, args=(top["departure"],))
                 if len(ok) < len(best["trials"]):
                     st.caption(f"{len(best['trials']) - len(ok)} departure(s) skipped: propulsion too low for the current.")
-                st.line_chart({"Duration (h)": {t["departure"]: t["duration_h"] for t in ok}})
+                st.plotly_chart(departure_figure(ok, top, best.get("use_local", True)), width="stretch",
+                                config=PLOT_CONFIG)
             st.caption(f"Departure times are in {'local time at the start point' if best.get('use_local', True) else 'UTC'}. Results are not updated "
                        "automatically when parameters change: run the search again.")

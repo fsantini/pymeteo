@@ -4,8 +4,8 @@ from matplotlib import pyplot as plt
 from streamlit_folium import st_folium
 import datetime
 from datetime import date
-from meteo import plot_winds, WEATHER_SOURCES
-from tides import tide_figures, get_tides, available_sources, NoDataError
+from meteo import wind_data, wind_figures, WEATHER_SOURCES
+from tides import PLOT_CONFIG, tide_figures_plotly, get_tides, available_sources, NoDataError
 
 st.title("Click on the map to get the typical winds")
 
@@ -60,28 +60,29 @@ placeholder = st.empty()
 if map['last_clicked']:
     data = get_pos(map['last_clicked']['lat'],map['last_clicked']['lng'])
 
-    with placeholder, st.spinner('Loading data...'):
-        success = False
+    with placeholder.container():
         try:
-            plot_winds(data, selected_date, cutoff_speed, weather_source)
-            success = True
-        except:
-            pass
-
-    if success:
-        placeholder.pyplot(plt.gcf())
-    else:
-        placeholder.error("An error occurred. Please try a different coordinate.")
+            with st.spinner('Loading data...'):
+                wind = wind_data(data, selected_date, cutoff_speed, weather_source)
+                figs = wind_figures(wind)
+        except Exception:
+            st.error("An error occurred. Please try a different coordinate.")
+        else:
+            st.markdown(f"**{wind['title']}**")
+            wc1, wc2 = st.columns(2)  # side by side on desktop, stacked on phones
+            wc1.plotly_chart(figs[0], width="stretch", config=PLOT_CONFIG)
+            wc2.plotly_chart(figs[1], width="stretch", config=PLOT_CONFIG)
+            st.caption(wind['footer'])
 
     if show_tides:
         st.subheader("Tidal currents (selected day ± 3 days)")
         try:
             with st.spinner('Computing tides...'):
                 tides = get_tides(tide_source, data[0], data[1], selected_date, tide_tz == "Local time")
-                compass_fig, tide_fig = tide_figures(tides, height_unit)
+                compass_fig, tide_fig = tide_figures_plotly(tides, height_unit)
             c1, c2 = st.columns([1, 3])
-            c1.pyplot(compass_fig)
-            c2.pyplot(tide_fig)
+            c1.plotly_chart(compass_fig, width="stretch", config=PLOT_CONFIG)
+            c2.plotly_chart(tide_fig, width="stretch", config=PLOT_CONFIG)
             st.caption(f"Source: {tides['source']}. Red arrow: flood current direction. "
                        f"Blue arrow: ebb current direction. Times in {tides['tzlabel']}.")
         except NoDataError as e:

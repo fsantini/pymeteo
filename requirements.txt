@@ -9,3 +9,4 @@ streamlit_folium
 
 pyTMD
 timezonefinder
+plotly

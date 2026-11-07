@@ -49,13 +49,19 @@ def _openmeteo_year(lat, lon, start, end):
             [v for v in h['precipitation'] if v is not None])
 
 
-def plot_winds(coords, desired_date, min_speed = 5, source = OPENMETEO):
+# (label, angle in the plot [deg, counter-clockwise from east], colour)
+DIRECTIONS = [("N", 90, 'red'), ("NE", 45, 'orange'), ("E", 0, 'yellow'), ("SE", -45, 'greenyellow'),
+              ("S", -90, 'green'), ("SW", -135, 'turquoise'), ("W", 180, 'blue'), ("NW", 135, 'blueviolet')]
+MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September',
+          'October', 'November', 'December']
+
+
+def wind_data(coords, desired_date, min_speed=5, source=OPENMETEO):
+    """Typical wind statistics for the week around desired_date, at coords (lat, lon)."""
     location = Point(coords[0], coords[1], 0)
     nearby_stations = stations.nearby(location, radius=100000, limit=10) if source == METEOSTAT else None
     now = datetime.now()
     current_year = now.year
-
-    print('Desired date', desired_date)
 
     if isinstance(desired_date, date):
         desired_date = datetime(desired_date.year, desired_date.month, desired_date.day)
@@ -100,216 +106,108 @@ def plot_winds(coords, desired_date, min_speed = 5, source = OPENMETEO):
         if 'prcp' in d:
             precip.extend(d['prcp'].dropna())
 
+    # sanitize wind, convert to knots
+    pairs = [(s / 1.852, d) for s, d in zip(wind_speeds, wind_dirs) if not (math.isnan(s) or math.isnan(d))]
+    total = len(pairs)
 
-    # sanitize wind
-    for i in range(len(wind_speeds)-1,-1,-1):
-        if math.isnan(wind_speeds[i]) or math.isnan(wind_dirs[i]):
-            #print('NaN found')
-            wind_speeds.pop(i)
-            wind_dirs.pop(i)
-    print(len(wind_speeds))
-    print(len(wind_dirs))
+    def sector(d):
+        """Index in DIRECTIONS of the 45-degree sector (centred on the compass point) containing d."""
+        for i, (_, angle, _) in enumerate(DIRECTIONS):
+            centre = (90 - angle) % 360  # compass bearing of the sector centre
+            if centre == 0:
+                if d >= 360 - 22.5 or d < 22.5:
+                    return i
+            elif centre - 22.5 <= d < centre + 22.5:
+                return i
+        return 0
 
-    # convert to knots
-    wind_speeds = [s/1.852 for s in wind_speeds]
-
-    speeds_low = []
-    speeds_n = []
-    speeds_ne = []
-    speeds_e = []
-    speeds_se = []
-    speeds_s = []
-    speeds_sw = []
-    speeds_w = []
-    speeds_nw = []
-
-    def direction_around(d, degrees):
-        if degrees == 0:
-            return d >= 360-22.5 or d < 22.5
-        return d >= degrees - 22.5 and d < degrees + 22.5
-
-    total_data_points = len(wind_speeds)
-
-    for i in range(total_data_points):
-        s = wind_speeds[i]
+    low = 0
+    per_dir = [[] for _ in DIRECTIONS]
+    for s, d in pairs:
         if s < min_speed:
-            speeds_low.append(s)
-            continue
-
-        d = wind_dirs[i]
-        if direction_around(d, 45):
-            speeds_ne.append(s)
-        elif direction_around(d, 90):
-            speeds_e.append(s)
-        elif direction_around(d, 135):
-            speeds_se.append(s)
-        elif direction_around(d, 180):
-            speeds_s.append(s)
-        elif direction_around(d, 225):
-            speeds_sw.append(s)
-        elif direction_around(d, 270):
-            speeds_w.append(s)
-        elif direction_around(d, 315):
-            speeds_nw.append(s)
+            low += 1
         else:
-            speeds_n.append(s)
+            per_dir[sector(d)].append(s)
 
-    def calc_frac(n):
-        return float(n)/total_data_points
-
-    def calc_ave(speeds):
-        if len(speeds) == 0:
-            return 0
-        return np.median(speeds)
-
-    def calc_top(speeds):
-        if len(speeds) == 0:
-            return 0
-        return np.percentile(speeds, 99)
-
-
-    width_factor = 1.0;
-
-
-    fraction_low = calc_frac(len(speeds_low))
-    fraction_n = calc_frac(len(speeds_n))
-    fraction_ne = calc_frac(len(speeds_ne))
-    fraction_e = calc_frac(len(speeds_e))
-    fraction_se = calc_frac(len(speeds_se))
-    fraction_s = calc_frac(len(speeds_s))
-    fraction_sw = calc_frac(len(speeds_sw))
-    fraction_w = calc_frac(len(speeds_w))
-    fraction_nw = calc_frac(len(speeds_nw))
-
-    max_fraction = np.max([fraction_n, fraction_ne, fraction_e, fraction_se, fraction_s, fraction_sw, fraction_w, fraction_nw])
-    if max_fraction > 0.125:
-        width_factor = 0.125/max_fraction
-
-    ave_n = calc_ave(speeds_n)
-    ave_ne = calc_ave(speeds_ne)
-    ave_e = calc_ave(speeds_e)
-    ave_se = calc_ave(speeds_se)
-    ave_s = calc_ave(speeds_s)
-    ave_sw = calc_ave(speeds_sw)
-    ave_w = calc_ave(speeds_w)
-    ave_nw = calc_ave(speeds_nw)
-
-    max_ave = np.max([ave_n, ave_ne, ave_e, ave_se, ave_s, ave_sw, ave_w, ave_nw])
-
-    top_n = calc_top(speeds_n)
-    top_ne = calc_top(speeds_ne)
-    top_e = calc_top(speeds_e)
-    top_se = calc_top(speeds_se)
-    top_s = calc_top(speeds_s)
-    top_sw = calc_top(speeds_sw)
-    top_w = calc_top(speeds_w)
-    top_nw = calc_top(speeds_nw)
-
-    max_top = np.max([top_n, top_ne, top_e, top_se, top_s, top_sw, top_w, top_nw])
+    fractions = [len(v) / total for v in per_dir]
+    max_fraction = max(fractions)
+    width_factor = 0.125 / max_fraction if max_fraction > 0.125 else 1.0
+    medians = [float(np.median(v)) if v else 0 for v in per_dir]
+    tops = [float(np.percentile(v, 99)) if v else 0 for v in per_dir]
+    low_t, high_t = np.percentile(temps, 5), np.percentile(temps, 95)
+    rain = float(len([p for p in precip if p > 0])) / len(precip) * 100
+    return dict(
+        min_speed=min_speed, fraction_low=low / total, fractions=fractions, width_factor=width_factor,
+        medians=medians, tops=tops, low_temp=float(low_t), high_temp=float(high_t), rain=rain,
+        title=f'Week of {MONTHS[desired_date.month-1]} {desired_date.day}, '
+              f'Loc: {location.latitude:.2f}, {location.longitude:.2f} ({source})',
+        footer=f'Low temp: {low_t:.1f}°C, High temp: {high_t:.1f}°C, Precipitations {rain:.1f}%, '
+               f'(Cutoff windspeed: {min_speed} kn)')
 
 
-    # draw the plot
-
-    f, (ax1, ax2) = plt.subplots(1,2)
-
-    ax = ax1
-
-    def draw_wedge(distance_from_center, center_angle, fill_fraction, radius, color):
-        angle_start = center_angle - 180*fill_fraction
-        angle_end = center_angle + 180*fill_fraction
-        center = (math.cos(math.radians(center_angle))*distance_from_center, math.sin(math.radians(center_angle))*distance_from_center)
-        sector = patches.Wedge(center, radius, angle_start, angle_end, fill=True, facecolor=color)
-        ax.add_patch(sector)
-        text_center_x = math.cos(math.radians(center_angle))*(distance_from_center+radius) * 1.2
-        text_center_y = math.sin(math.radians(center_angle))*(distance_from_center+radius) * 1.2
-        ax.text(text_center_x, text_center_y, f'{radius:.1f}', ha='center', va='center', fontsize=10)
-
-    def draw_wedge2(center_angle, fill_fraction, radius, color):
-        if radius <= min_speed:
-            return
-        angle_start = center_angle - 180*fill_fraction
-        angle_end = center_angle + 180*fill_fraction
-        center = (0,0)
-        sector = patches.Wedge(center, radius, angle_start, angle_end, fill=True, facecolor=color)
-        ax.add_patch(sector)
-        text_center_x = math.cos(math.radians(center_angle))* radius * 1.2
-        text_center_y = math.sin(math.radians(center_angle))* radius * 1.2
-        ax.text(text_center_x, text_center_y, f'{radius:.1f}', ha='center', va='center', fontsize=10)
-
-    """    
-    draw_wedge(fraction_low * 10, 90, fraction_n, ave_n, 'red')
-    draw_wedge(fraction_low * 10, 45, fraction_ne, ave_ne, 'orange')
-    draw_wedge(fraction_low * 10, 0, fraction_e, ave_e, 'yellow')
-    draw_wedge(fraction_low * 10, -45, fraction_se, ave_se, 'greenyellow')
-    draw_wedge(fraction_low * 10, -90, fraction_s, ave_s, 'green')
-    draw_wedge(fraction_low * 10, -135, fraction_sw, ave_sw, 'turquoise')
-    draw_wedge(fraction_low * 10, 180, fraction_w, ave_w, 'blue')
-    draw_wedge(fraction_low * 10, 135, fraction_nw, ave_nw, 'blueviolet')
-    """
-
-    draw_wedge2(90, fraction_n*width_factor, ave_n, 'red')
-    draw_wedge2(45, fraction_ne*width_factor, ave_ne, 'orange')
-    draw_wedge2(0, fraction_e*width_factor, ave_e, 'yellow')
-    draw_wedge2(-45, fraction_se*width_factor, ave_se, 'greenyellow')
-    draw_wedge2(-90, fraction_s*width_factor, ave_s, 'green')
-    draw_wedge2(-135, fraction_sw*width_factor, ave_sw, 'turquoise')
-    draw_wedge2(180, fraction_w*width_factor, ave_w, 'blue')
-    draw_wedge2(135, fraction_nw*width_factor, ave_nw, 'blueviolet')
-
-    center_circle = patches.Circle((0,0), radius=min_speed, fc = 'azure')
-    ax.add_patch(center_circle)
-    ax.text(0,0,f'{fraction_low*100:.0f}%', ha='center', va='center', fontsize=8)
+def _wedge_points(angle, half_width, radius, n=24):
+    """Outline (x, y) of a pie wedge centred on angle (deg), apex at the origin."""
+    a = np.radians(np.linspace(angle - half_width, angle + half_width, n))
+    return [0.0, *(radius * np.cos(a))], [0.0, *(radius * np.sin(a))]
 
 
+def wind_figures(w):
+    """Two interactive Plotly figures (median speeds, top speeds): pinch/zoom/pan work on touch screens."""
+    import plotly.graph_objects as go
+    figs = []
+    for key, name in (("medians", "Median speeds"), ("tops", "Top speeds")):
+        fig = go.Figure()
+        values = w[key]
+        for (label, angle, color), frac, radius in zip(DIRECTIONS, w["fractions"], values):
+            if radius <= w["min_speed"]:
+                continue
+            x, y = _wedge_points(angle, 180 * frac * w["width_factor"], radius)
+            fig.add_trace(go.Scatter(
+                x=x, y=y, mode="lines", fill="toself", fillcolor=color, line=dict(color="black", width=0.5),
+                hoverinfo="text", showlegend=False,
+                text=f"{label}: {frac * 100:.0f}% of the time<br>{name.split()[0].lower()} {radius:.1f} kn"))
+            fig.add_annotation(x=radius * 1.2 * math.cos(math.radians(angle)),
+                               y=radius * 1.2 * math.sin(math.radians(angle)),
+                               text=f"{radius:.1f}", showarrow=False, font=dict(size=13))
+        ang = np.linspace(0, 2 * np.pi, 91)  # full circle, no apex point (which drew a radius line)
+        fig.add_trace(go.Scatter(x=w["min_speed"] * np.cos(ang), y=w["min_speed"] * np.sin(ang), mode="lines",
+                                 fill="toself", fillcolor="azure", line=dict(width=0),
+                                 hoverinfo="skip", showlegend=False))
+        fig.add_annotation(x=0, y=0, text=f"{w['fraction_low'] * 100:.0f}%", showarrow=False, font=dict(size=13))
+        lim = max(max(values), w["min_speed"]) * 1.35
+        fig.update_xaxes(range=[-lim, lim], visible=False, constrain="domain")
+        fig.update_yaxes(range=[-lim, lim], visible=False, scaleanchor="x", scaleratio=1)
+        fig.update_layout(title=dict(text=name, x=0.02, xanchor="left", font=dict(size=16)), margin=dict(l=5, r=5, t=50, b=5),
+                          height=420, dragmode="pan", plot_bgcolor="white")
+        figs.append(fig)
+    return figs
 
-    ax.set_xlim(-max_ave*1.25,max_ave*1.25)
-    ax.set_ylim(-max_ave*1.25,max_ave*1.25)
-    ax.set_aspect('equal')
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.set_xlabel('Median speeds')
 
-    ax = ax2
+def plot_winds(coords, desired_date, min_speed=5, source=OPENMETEO):
+    """Matplotlib version of the wind plots (used by the Qt UI)."""
+    w = wind_data(coords, desired_date, min_speed, source)
+    f, axes = plt.subplots(1, 2)
+    for ax, key, name in ((axes[0], "medians", "Median speeds"), (axes[1], "tops", "Top speeds")):
+        values = w[key]
+        for (label, angle, color), frac, radius in zip(DIRECTIONS, w["fractions"], values):
+            if radius <= min_speed:
+                continue
+            half = 180 * frac * w["width_factor"]
+            ax.add_patch(patches.Wedge((0, 0), radius, angle - half, angle + half, fill=True, facecolor=color))
+            ax.text(math.cos(math.radians(angle)) * radius * 1.2, math.sin(math.radians(angle)) * radius * 1.2,
+                    f'{radius:.1f}', ha='center', va='center', fontsize=10)
+        ax.add_patch(patches.Circle((0, 0), radius=min_speed, fc='azure'))
+        ax.text(0, 0, f"{w['fraction_low']*100:.0f}%", ha='center', va='center', fontsize=8)
+        lim = max(values) * 1.25
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-lim, lim)
+        ax.set_aspect('equal')
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_xlabel(name)
+    plt.text(0.5, 0, w["footer"], ha='center', va='bottom', transform=f.transFigure)
+    plt.text(0.5, 0.9, w["title"], ha='center', va='bottom', transform=f.transFigure)
 
-    draw_wedge2(90, fraction_n*width_factor, top_n, 'red')
-    draw_wedge2(45, fraction_ne*width_factor, top_ne, 'orange')
-    draw_wedge2(0, fraction_e*width_factor, top_e, 'yellow')
-    draw_wedge2(-45, fraction_se*width_factor, top_se, 'greenyellow')
-    draw_wedge2(-90, fraction_s*width_factor, top_s, 'green')
-    draw_wedge2(-135, fraction_sw*width_factor, top_sw, 'turquoise')
-    draw_wedge2(180, fraction_w*width_factor, top_w, 'blue')
-    draw_wedge2(135, fraction_nw*width_factor, top_nw, 'blueviolet')
-
-    center_circle = patches.Circle((0,0), radius=min_speed, fc = 'azure')
-    ax.add_patch(center_circle)
-    ax.text(0,0,f'{fraction_low*100:.0f}%', ha='center', va='center', fontsize=10)
-
-
-
-    ax.set_xlim(-max_top*1.25,max_top*1.25)
-    ax.set_ylim(-max_top*1.25,max_top*1.25)
-    ax.set_aspect('equal')
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.set_xlabel('Top speeds')
-
-    print('Low temp', np.percentile(temps, 5))
-    print('High temp', np.percentile(temps, 95))
-    print(f'Precipitations {float(len([p for p in precip if p > 0]))/len(precip)*100:.1f}%')
-
-    months = [
-        'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
-
-    plt.text(0.5,0,
-             f'Low temp: {np.percentile(temps, 5):.1f}°C, High temp: {np.percentile(temps, 95):.1f}°C, Precipitations {float(len([p for p in precip if p > 0]))/len(precip)*100:.1f}%, (Cutoff windspeed: {min_speed} kn)',
-             ha='center',
-             va='bottom',
-             transform=f.transFigure)
-    plt.text(0.5,0.9,
-             f'Week of {months[desired_date.month-1]} {desired_date.day}, Loc: {location.latitude:.2f}, {location.longitude:.2f} ({source})',
-             ha='center',
-             va='bottom',
-             transform=f.transFigure)
 
 if __name__ == "__main__":
     plot_winds(coords, desired_date)
