@@ -94,14 +94,35 @@ MODES = ["Constant VMG (speed over ground)", "Constant propulsion (speed through
 mode = st.radio("Mode", MODES, horizontal=True)
 propulsion = mode == MODES[1]
 c1, c2, c3 = st.columns(3)
-dep_date = c1.date_input("Departure date", value=datetime.now().date())
-dep_time = c2.time_input("Departure time", value=time(9, 0), step=900)
+dep_date = c1.date_input("Departure date", value=datetime.now().date(), key="dep_date")
+dep_time = c2.time_input("Departure time", value=time(9, 0), step=900, key="dep_time")
 speed_kn = c3.number_input("Propulsion speed through water (kn)" if propulsion else "Boat speed over ground (kn)", min_value=0.5, max_value=40.0, value=5.0, step=0.5)
 c4, c5, c6 = st.columns(3)
 n_points = c4.number_input("Route points (start, waypoints, end)", min_value=2, max_value=12, value=2, step=1)
 n_steps = c5.slider("Number of steps", 2, 60, 10)
 source = c6.selectbox("Tide data source", available_sources())
 del pts[n_points:]  # fewer points requested than already placed
+
+def blend(v1, v2, f):
+    return (v1[0] * (1 - f) + v2[0] * f, v1[1] * (1 - f) + v2[1] * f)
+
+
+def fill_gaps(vec, dists):
+    """Fill points without data by linear interpolation (by distance) between the previous and next
+    point that has data. Gaps at either end of the route stay empty. Returns (vec, set of filled indices)."""
+    vec, filled = list(vec), set()
+    known = [i for i, v in enumerate(vec) if v is not None]
+    for i, v in enumerate(vec):
+        if v is not None:
+            continue
+        before = [k for k in known if k < i]
+        after = [k for k in known if k > i]
+        if before and after:
+            p, q = before[-1], after[0]
+            vec[i] = blend(vec[p], vec[q], (dists[i] - dists[p]) / (dists[q] - dists[p]))
+            filled.add(i)
+    return vec, filled
+
 
 def clear_route():
     """Forget the points, the computed route/arrows and the map's frontend state (popups etc.)."""
@@ -134,24 +155,43 @@ def compute_propulsion(pts, dep_date, dep_time, speed_kn, n_steps, source):
         marks[round(float(cum[k - 1]), 6)] = pts[k]
     dists = sorted(marks)
     places = [marks[d] or point_at(pts, legs, d) for d in dists]
-    res = dict(pts=list(pts), arrows=[], props=[], rows=[], error=None, info=None, summary="")
-    t, missing = dep, 0
+    res = dict(pts=list(pts), arrows=[], props=[], rows=[], error=None, info=None, summary="", duration_h=None)
+    t, missing, filled, last_valid = dep, 0, 0, None
     # one scale for both arrows; the propulsion arrow (largest) spans about one step
     scale = 0.7 * (total / n_steps / 60.0) / max(speed_kn, 0.5)
     try:
         for i, ((lat, lon), d) in enumerate(zip(places, dists)):
             utc = np.datetime64(t.astimezone(ZoneInfo("UTC")).replace(tzinfo=None))
             v = current_vectors(source, [lat], [lon], [utc])[0]
-            if v is None:
-                missing += 1
+            mark = ""
+            if v is not None:
+                last_valid = (d, v)
+            else:
+                # no data here: interpolate between the previous point with data and the next one,
+                # whose passage time is estimated assuming the propulsion speed over the ground
+                nxt = None
+                if last_valid:
+                    for j in range(i + 1, len(places)):
+                        tj = t + timedelta(hours=(dists[j] - d) / speed_kn)
+                        vj = current_vectors(source, [places[j][0]], [places[j][1]],
+                                             [np.datetime64(tj.astimezone(ZoneInfo("UTC")).replace(tzinfo=None))])[0]
+                        if vj is not None:
+                            nxt = (dists[j], vj)
+                            break
+                if last_valid and nxt:
+                    v = blend(last_valid[1], nxt[1], (d - last_valid[0]) / (nxt[0] - last_valid[0]))
+                    mark, filled = "~", filled + 1
+                else:
+                    missing += 1
             ce, cn = v or (0.0, 0.0)
             cspd, cbrg = math.hypot(ce, cn), math.degrees(math.atan2(ce, cn)) % 360
             row = {"Distance (nm)": round(d, 1), "Time (local)": f"{t:%d %b %H:%M}",
                    "Current (kn)": round(cspd, 2), "Towards (°)": round(cbrg)}
             if v is not None:
                 res["arrows"].append((lat, lon, ce, cn, scale,
-                                      f"{t:%d %b %H:%M} — current {cspd:.2f} kn towards {cbrg:.0f}°",
-                                      f"{t:%H:%M}<br>{cspd:.1f} kn"))
+                                      f"{t:%d %b %H:%M} — current {mark}{cspd:.2f} kn towards {cbrg:.0f}°"
+                                      + (" (interpolated)" if mark else ""),
+                                      f"{t:%H:%M}<br>{mark}{cspd:.1f} kn"))
             if i == len(places) - 1:
                 res["rows"].append(row)
                 break
@@ -180,8 +220,15 @@ def compute_propulsion(pts, dep_date, dep_time, speed_kn, n_steps, source):
             t += timedelta(hours=(dists[i + 1] - d) / vmg)
         res["summary"] = (f"Route length: {total:.1f} nm — duration {(t - dep).total_seconds() / 3600:.1f} h — "
                           f"times in local time ({tz.key}).")
+        res["duration_h"] = (t - dep).total_seconds() / 3600
+        notes = []
+        if filled:
+            notes.append(f"{filled} point(s) without {source} data use a current interpolated between the "
+                         "previous and next point (marked ~)")
         if missing:
-            res["info"] = f"{source} has no current data at {missing} point(s): zero current assumed there."
+            notes.append(f"{missing} point(s) have no data to interpolate from: zero current assumed there")
+        if notes:
+            res["info"] = "; ".join(notes) + "."
     except NoDataError as e:
         res["info"] = f"{source} does not provide tidal current data for this route. {e}"
     except ValueError as e:
@@ -216,16 +263,23 @@ def compute_vmg(pts, dep_date, dep_time, speed_kn, n_steps, source):
         valid = [v for v in vec if v]
         if not valid:
             raise NoDataError("No tidal current data along this route.")
+        vec, filled = fill_gaps(vec, dists)
+        valid = [v for v in vec if v]
+        if filled:
+            res["info"] = (f"{source} has no current data at {len(filled)} point(s) on the route: "
+                           "the current there is interpolated between the previous and next point (marked ~).")
         # arrow length: strongest current spans ~ one step
         step_deg = (total / n_steps) / 60.0
         scale = 0.9 * step_deg / max(max(math.hypot(*v) for v in valid), 0.5)
-        for (lat, lon), d, w, v in zip(places, dists, when, vec):
+        for i, ((lat, lon), d, w, v) in enumerate(zip(places, dists, when, vec)):
             if v is None:
                 continue
             spd, brg = math.hypot(*v), math.degrees(math.atan2(v[0], v[1])) % 360
+            mark = "~" if i in filled else ""
             res["arrows"].append((lat, lon, v[0], v[1], scale,
-                                  f"{w:%d %b %H:%M} — {spd:.2f} kn towards {brg:.0f}°",
-                                  f"{w:%H:%M}<br>{spd:.1f} kn"))
+                                  f"{w:%d %b %H:%M} — {mark}{spd:.2f} kn towards {brg:.0f}°"
+                                  + (" (interpolated)" if mark else ""),
+                                  f"{w:%H:%M}<br>{mark}{spd:.1f} kn"))
             res["rows"].append({"Distance (nm)": round(d, 1), "Time (local)": f"{w:%d %b %H:%M}",
                                 "Current (kn)": round(spd, 2), "Towards (°)": round(brg)})
     except NoDataError as e:
@@ -311,3 +365,57 @@ if res and res["rows"]:
     st.dataframe(res["rows"], hide_index=True)
     st.caption("Red arrow: direction the water flows towards. "
                + ("Green arrow: propulsion velocity through the water (heading). Both to the same scale." if res.get("props") else "Length proportional to current speed."))
+
+
+# ---- best departure time (constant propulsion only) ----
+def best_departure(pts, first_dep, window_h, step_min, speed_kn, n_steps, source, progress=None):
+    """Try departures every step_min minutes from first_dep (naive local datetime) for window_h hours.
+
+    Returns a list of dicts (departure, duration_h or None, error). Each trial is a full
+    constant-propulsion simulation, so the current is always taken at the actual passage times.
+    """
+    n = int(window_h * 60 // step_min) + 1
+    out = []
+    for k in range(n):
+        dt = first_dep + timedelta(minutes=k * step_min)
+        r = compute_propulsion(pts, dt.date(), dt.time(), speed_kn, n_steps, source)
+        out.append(dict(departure=dt, duration_h=r["duration_h"], error=r["error"]))
+        if progress:
+            progress((k + 1) / n)
+    return out
+
+
+def use_departure(dt):
+    st.session_state.dep_date, st.session_state.dep_time = dt.date(), dt.time()
+
+
+if propulsion and ready:
+    with st.expander("Find the best departure time"):
+        b1, b2 = st.columns(2)
+        window_h = b1.number_input("Window length from the departure time above (h)", 1.0, 72.0, 12.0, 1.0)
+        step_min = b2.number_input("Try a departure every (min)", 5, 240, 30, 5)
+        if st.button("Find best departure"):
+            bar = st.progress(0.0)
+            first = datetime.combine(dep_date, dep_time)
+            st.session_state.best = dict(
+                trials=best_departure(pts, first, window_h, step_min, speed_kn, n_steps, source, bar.progress),
+                key=(tuple(pts), first, window_h, step_min, speed_kn, n_steps, source))
+            bar.empty()
+        best = st.session_state.get("best")
+        if best:
+            ok = [t for t in best["trials"] if t["duration_h"] is not None]
+            if not ok:
+                st.error("No departure in the window allows completing the route: "
+                         + (best["trials"][0]["error"] or "no data."))
+            else:
+                top = min(ok, key=lambda t: t["duration_h"])
+                worst = max(ok, key=lambda t: t["duration_h"])
+                st.success(f"Best departure: {top['departure']:%a %d %b %H:%M} — duration "
+                           f"{top['duration_h']:.2f} h (worst in window: {worst['duration_h']:.2f} h at "
+                           f"{worst['departure']:%H:%M}, difference {(worst['duration_h'] - top['duration_h']) * 60:.0f} min).")
+                st.button("Use this departure time", on_click=use_departure, args=(top["departure"],))
+                if len(ok) < len(best["trials"]):
+                    st.caption(f"{len(best['trials']) - len(ok)} departure(s) skipped: propulsion too low for the current.")
+                st.line_chart({"Duration (h)": {t["departure"]: t["duration_h"] for t in ok}})
+            st.caption("Departure times are local time at the start point. Results are not updated "
+                       "automatically when parameters change: run the search again.")

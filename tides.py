@@ -313,16 +313,27 @@ def predict_tmd_points(lats, lons, times, model):
 
 @lru_cache(maxsize=64)
 def _noaa_station_series(sid, name, day):
-    return _noaa_current_series(sid, name, day, 1)
+    try:
+        return _noaa_current_series(sid, name, day, 1)
+    except Exception:
+        return None  # cached too: a station without data is not asked again
+
+
+@lru_cache(maxsize=2048)
+def _nearest_current_station(lat, lon):
+    return _nearest("currentpredictions", lat, lon, NOAA_MAX_CURRENT_KM)  # local, station list is cached
 
 
 def _noaa_route_current(lat, lon, t):
     """Current (cm/s, signed +flood) and flood/ebb bearings at one point/time; one request per station and day."""
-    cs = _nearest("currentpredictions", lat, lon, NOAA_MAX_CURRENT_KM)  # local, station list is cached
+    cs = _nearest_current_station(round(lat, 4), round(lon, 4))
     if cs is None:
         raise NoDataError("No NOAA station nearby.")
     _, sid, name = cs
-    times, speed, flood, ebb = _noaa_station_series(sid, name, t.astype(object).date())
+    series = _noaa_station_series(sid, name, t.astype(object).date())
+    if series is None:
+        raise NoDataError(f"NOAA station {name} has no data.")
+    times, speed, flood, ebb = series
     ts = times.astype("datetime64[s]").astype("int64")
     return float(np.interp(t.astype("int64"), ts, speed)), flood, ebb
 
