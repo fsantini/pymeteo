@@ -74,9 +74,9 @@ def arrow(m, lat, lon, e, n, scale, tooltip, label="", color="red"):
     ux, uy = e / spd, n / spd  # unit vector (east, north)
     length = spd * scale
     tip = (lat + uy * length, lon + ux * length / c)
-    head = length * 0.3
+    head = length * 0.2
     pts = []
-    for ang in (150, -150):  # arrowhead barbs
+    for ang in (170, -170):  # arrowhead barbs
         a = math.radians(ang)
         bx, by = ux * math.cos(a) - uy * math.sin(a), ux * math.sin(a) + uy * math.cos(a)
         pts.append((tip[0] + by * head, tip[1] + bx * head / c))
@@ -137,7 +137,7 @@ def compute_propulsion(pts, dep_date, dep_time, speed_kn, n_steps, source):
     res = dict(pts=list(pts), arrows=[], props=[], rows=[], error=None, info=None, summary="")
     t, missing = dep, 0
     # one scale for both arrows; the propulsion arrow (largest) spans about one step
-    scale = 0.9 * (total / n_steps / 60.0) / max(speed_kn, 0.5)
+    scale = 0.7 * (total / n_steps / 60.0) / max(speed_kn, 0.5)
     try:
         for i, ((lat, lon), d) in enumerate(zip(places, dists)):
             utc = np.datetime64(t.astimezone(ZoneInfo("UTC")).replace(tzinfo=None))
