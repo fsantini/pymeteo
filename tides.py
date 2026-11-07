@@ -199,12 +199,8 @@ def _noaa_times(rows):
     return np.array([np.datetime64(r["Time"] if "Time" in r else r["t"]) for r in rows])
 
 
-def predict_noaa(lat, lon, center_date, days=3):
-    """Tide predictions from the nearest NOAA CO-OPS current / tide stations."""
-    cs = _nearest("currentpredictions", lat, lon, NOAA_MAX_CURRENT_KM)
-    if cs is None:
-        raise NoDataError(f"No NOAA CO-OPS current prediction station within {NOAA_MAX_CURRENT_KM:.0f} km.")
-    km, sid, name = cs
+def _noaa_current_series(sid, name, center_date, days):
+    """Current predictions (times, speed cm/s +flood, flood bearing, ebb bearing) of one station."""
     d = _noaa_data("currents_predictions", sid, center_date, days, {"interval": 6})
     rows = d["current_predictions"]["cp"]
     if not rows:
@@ -224,6 +220,16 @@ def predict_noaa(lat, lon, center_date, days=3):
         times = grid.astype("datetime64[m]")
     flood = float(rows[0]["meanFloodDir"])
     ebb = float(rows[0]["meanEbbDir"])
+    return times, speed, flood, ebb
+
+
+def predict_noaa(lat, lon, center_date, days=3):
+    """Tide predictions from the nearest NOAA CO-OPS current / tide stations."""
+    cs = _nearest("currentpredictions", lat, lon, NOAA_MAX_CURRENT_KM)
+    if cs is None:
+        raise NoDataError(f"No NOAA CO-OPS current prediction station within {NOAA_MAX_CURRENT_KM:.0f} km.")
+    km, sid, name = cs
+    times, speed, flood, ebb = _noaa_current_series(sid, name, center_date, days)
     height, ts = None, None
     # some tide stations lack a given datum or have no data: try the next datum/station
     for cand in _nearest_list("tidepredictions", lat, lon, NOAA_MAX_TIDE_KM):
@@ -293,6 +299,57 @@ def get_tides(source, lat, lon, center_date, use_local=True):
     r["times"] = np.array([np.datetime64(d.replace(tzinfo=None)) for d in local])
     r["tzlabel"] = f"local time, {tz.key}" if use_local else "UTC"
     return r
+
+
+def predict_tmd_points(lats, lons, times, model):
+    """East/north current (cm/s) at paired points/times (UTC datetime64) from a pyTMD model."""
+    import pyTMD.compute
+    kw = dict(directory=model_directory(), model=model, type="drift",
+              standard="datetime", extrapolate=True, cutoff=50.0)
+    cur = pyTMD.compute.tide_currents(np.asarray(lons, dtype=float), np.asarray(lats, dtype=float),
+                                      np.asarray(times), **kw)
+    return _as_array(cur, "u"), _as_array(cur, "v")
+
+
+@lru_cache(maxsize=64)
+def _noaa_station_series(sid, name, day):
+    return _noaa_current_series(sid, name, day, 1)
+
+
+def _noaa_route_current(lat, lon, t):
+    """Current (cm/s, signed +flood) and flood/ebb bearings at one point/time; one request per station and day."""
+    cs = _nearest("currentpredictions", lat, lon, NOAA_MAX_CURRENT_KM)  # local, station list is cached
+    if cs is None:
+        raise NoDataError("No NOAA station nearby.")
+    _, sid, name = cs
+    times, speed, flood, ebb = _noaa_station_series(sid, name, t.astype(object).date())
+    ts = times.astype("datetime64[s]").astype("int64")
+    return float(np.interp(t.astype("int64"), ts, speed)), flood, ebb
+
+
+def current_vectors(source, lats, lons, times):
+    """Tidal current (east_kn, north_kn) at each (lat, lon, UTC datetime64 time).
+
+    Entries are None where the source has no data.
+    """
+    times = np.asarray(times, dtype="datetime64[s]")
+    if source == NOAA:
+        out = []
+        for lat, lon, t in zip(lats, lons, times):
+            try:
+                sp, flood, ebb = _noaa_route_current(float(lat), float(lon), t)
+                sp *= KN_PER_CMS
+                brg = np.radians(flood if sp >= 0 else ebb)
+                out.append((abs(sp) * np.sin(brg), abs(sp) * np.cos(brg)))
+            except Exception:
+                out.append(None)
+        return out
+    model = _installed_model(source)
+    if model is None:
+        raise NoDataError(f"{source} model files are not installed.")
+    u, v = predict_tmd_points(lats, lons, times, model)
+    return [None if (np.isnan(a) or np.isnan(b)) else (a * KN_PER_CMS, b * KN_PER_CMS)
+            for a, b in zip(u, v)]
 
 
 def plot_compass(flood_bearing, ebb_bearing):

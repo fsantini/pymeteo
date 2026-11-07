@@ -12,6 +12,8 @@ st.title("Click on the map to get the typical winds")
 st.write("This app displays the typical winds for a given location and date. Click on the map to select a location, then choose a date from the calendar. The app will display the typical wind speeds and directions for that location and date.")
 st.write("Weather data from Meteostat or Open-Meteo. Map from Folium (OpenStreetMap).")
 
+st.page_link("pages/tideroute.py", label="Tide route planner: tidal currents along a route →")
+
 explanation_placeholder = st.empty()
 
 def get_pos(lat,lng):
