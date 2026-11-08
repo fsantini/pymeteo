@@ -10,6 +10,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from pdf_export import route_pdf  # noqa: E402
 from tides import PLOT_CONFIG, available_sources, current_vectors, local_timezone, NoDataError  # noqa: E402
 
 R_NM = 3440.065  # earth radius in nautical miles
@@ -317,6 +318,7 @@ applied = st.session_state.get("applied")
 # fixed slots keep the map at the same position in the page, so it is never remounted
 slot_top = st.container()
 slot_status = st.container()
+slot_pdf = st.container()
 if ready and applied is None:  # first route: calculate automatically
     run = True
 elif ready and applied != params:
@@ -470,3 +472,31 @@ if propulsion and ready:
                                 config=PLOT_CONFIG)
             st.caption(f"Departure times are in {'local time at the start point' if best.get('use_local', True) else 'UTC'}. Results are not updated "
                        "automatically when parameters change: run the search again.")
+
+
+# ---- PDF export (filled last, into its slot near the map, so it sees the departure search above) ----
+def current_best():
+    """(ok trials, best trial, use_local, caption) of the departure search, if it matches the current route."""
+    b = st.session_state.get("best")
+    if not (propulsion and ready and b):
+        return None
+    k = b["key"]  # (pts, first, window_h, step_min, speed_kn, n_steps, source, use_local)
+    if (k[0], k[4], k[5], k[6]) != (tuple(pts), speed_kn, n_steps, source):
+        return None
+    ok = [t for t in b["trials"] if t["duration_h"] is not None]
+    if not ok:
+        return None
+    top = min(ok, key=lambda t: t["duration_h"])
+    ul = b.get("use_local", True)
+    return ok, top, ul, (f"Best departure: {top['departure']:%a %d %b %H:%M} — duration {top['duration_h']:.2f} h "
+                         f"({'local time at the start point' if ul else 'UTC'}).")
+
+
+if res and res["rows"] and applied == params:  # the PDF shows what is on the map: not when it is stale
+    # everything is evaluated now: the download callback runs later, outside the script run
+    pdf_args = (res, f"{datetime.combine(dep_date, dep_time):%a %d %b %Y %H:%M} "
+                     f"({'local time' if use_local else 'UTC'})",
+                f"{speed_kn:g} kn", "Propulsion speed through water" if propulsion else "Boat speed over ground",
+                current_best())
+    slot_pdf.download_button("Export to PDF", lambda: route_pdf(*pdf_args), file_name="route.pdf",
+                             mime="application/pdf", on_click="ignore", icon=":material/picture_as_pdf:")

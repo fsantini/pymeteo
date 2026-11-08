@@ -368,8 +368,9 @@ def current_vectors(source, lats, lons, times):
             for a, b in zip(u, v)]
 
 
-def plot_compass(flood_bearing, ebb_bearing):
-    fig = plt.figure(figsize=(3.5, 3.5))
+def plot_compass(flood_bearing, ebb_bearing, fig=None):
+    own = fig is None  # otherwise draw into the given (sub)figure
+    fig = fig if fig is not None else plt.figure(figsize=(3.5, 3.5))
     ax = fig.add_subplot(projection="polar")
     ax.set_theta_zero_location("N")
     ax.set_theta_direction(-1)
@@ -380,15 +381,21 @@ def plot_compass(flood_bearing, ebb_bearing):
     for bearing, color in ((flood_bearing, "red"), (ebb_bearing, "blue")):
         ax.annotate("", xy=(np.radians(bearing), 0.9), xytext=(0, 0),
                     arrowprops=dict(arrowstyle="-|>", color=color, lw=3, mutation_scale=20))
-    ax.set_title(f"Flood {flood_bearing:.0f}° (red)\nEbb {ebb_bearing:.0f}° (blue)", fontsize=10)
-    fig.tight_layout()
+    ax.set_title(f"Flood {flood_bearing:.0f}° (red)\nEbb {ebb_bearing:.0f}° (blue)", fontsize=10 if own else 7.5)
+    if own:
+        fig.tight_layout()
+    else:
+        fig.subplots_adjust(left=0.2, right=0.8, bottom=0.28, top=0.66)
     return fig
 
 
-def plot_tides(times, speed, height, extrema, tzlabel="UTC", height_unit="m"):
+def plot_tides(times, speed, height, extrema, tzlabel="UTC", height_unit="m", fig=None):
     t = times.astype("datetime64[s]").astype(object)
     x = mdates.date2num(t)
-    fig, ax = plt.subplots(figsize=(11, 4.5))
+    own = fig is None
+    if own:
+        fig = plt.figure(figsize=(11, 4.5))
+    ax = fig.subplots()
     if height is not None:
         ax2 = ax.twinx()
         h = np.asarray(height) * (3.28084 if height_unit == "ft" else 1.0)
@@ -434,7 +441,15 @@ def plot_tides(times, speed, height, extrema, tzlabel="UTC", height_unit="m"):
     ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=range(0, 24, 6)))
     ax.grid(alpha=0.3)
     ax.set_title(f"Tidal current and tide height — times {tzlabel}\n(black ticks: zero current)", fontsize=10)
-    fig.tight_layout()
+    if own:
+        fig.tight_layout()
+    else:  # compact version for the PDF export
+        for a in fig.axes:
+            a.tick_params(labelsize=7)
+            a.yaxis.label.set_size(7.5)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%a %d"))
+        ax.title.set_fontsize(8.5)
+        fig.subplots_adjust(left=0.1, right=0.9, bottom=0.12, top=0.84)
     return fig
 
 
@@ -521,7 +536,7 @@ def tide_figures_plotly(r, height_unit="m"):
             tides_plotly(r["times"], r["speed"], r["height"], r["extrema"], r["tzlabel"], height_unit))
 
 
-def tide_figures(r, height_unit="m"):
-    """Compass and time-series figures from a get_tides() result."""
-    return (plot_compass(r["flood_bearing"], r["ebb_bearing"]),
-            plot_tides(r["times"], r["speed"], r["height"], r["extrema"], r["tzlabel"], height_unit))
+def tide_figures(r, height_unit="m", figs=(None, None)):
+    """Compass and time-series figures from a get_tides() result (optionally into existing (sub)figures)."""
+    return (plot_compass(r["flood_bearing"], r["ebb_bearing"], fig=figs[0]),
+            plot_tides(r["times"], r["speed"], r["height"], r["extrema"], r["tzlabel"], height_unit, fig=figs[1]))

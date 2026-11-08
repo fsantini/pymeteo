@@ -139,7 +139,7 @@ def wind_data(coords, desired_date, min_speed=5, source=OPENMETEO):
     return dict(
         min_speed=min_speed, fraction_low=low / total, fractions=fractions, width_factor=width_factor,
         medians=medians, tops=tops, low_temp=float(low_t), high_temp=float(high_t), rain=rain,
-        title=f'Week of {MONTHS[desired_date.month-1]} {desired_date.day}, '
+        title=f'Week of {MONTHS[desired_date.month-1]} {desired_date.day}, {desired_date.year}, '
               f'Loc: {location.latitude:.2f}, {location.longitude:.2f} ({source})',
         footer=f'Low temp: {low_t:.1f}°C, High temp: {high_t:.1f}°C, Precipitations {rain:.1f}%, '
                f'(Cutoff windspeed: {min_speed} kn)')
@@ -183,10 +183,11 @@ def wind_figures(w):
     return figs
 
 
-def plot_winds(coords, desired_date, min_speed=5, source=OPENMETEO):
-    """Matplotlib version of the wind plots (used by the Qt UI)."""
-    w = wind_data(coords, desired_date, min_speed, source)
-    f, axes = plt.subplots(1, 2)
+def wind_mpl_figure(w, figsize=None, fig=None):
+    """Matplotlib version of the wind plots (Qt UI and PDF export), from a wind_data() result."""
+    min_speed = w["min_speed"]
+    f = fig if fig is not None else plt.figure(figsize=figsize)  # fig: an existing (sub)figure to draw into
+    axes = f.subplots(1, 2)
     for ax, key, name in ((axes[0], "medians", "Median speeds"), (axes[1], "tops", "Top speeds")):
         values = w[key]
         for (label, angle, color), frac, radius in zip(DIRECTIONS, w["fractions"], values):
@@ -198,15 +199,21 @@ def plot_winds(coords, desired_date, min_speed=5, source=OPENMETEO):
                     f'{radius:.1f}', ha='center', va='center', fontsize=10)
         ax.add_patch(patches.Circle((0, 0), radius=min_speed, fc='azure'))
         ax.text(0, 0, f"{w['fraction_low']*100:.0f}%", ha='center', va='center', fontsize=8)
-        lim = max(values) * 1.25
+        lim = max(max(values), min_speed) * 1.25
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
         ax.set_aspect('equal')
         ax.set_xticks([])
         ax.set_yticks([])
         ax.set_xlabel(name)
-    plt.text(0.5, 0, w["footer"], ha='center', va='bottom', transform=f.transFigure)
-    plt.text(0.5, 0.9, w["title"], ha='center', va='bottom', transform=f.transFigure)
+    f.text(0.5, 0, w["footer"], ha='center', va='bottom')
+    f.text(0.5, 0.9, w["title"], ha='center', va='bottom')
+    return f
+
+
+def plot_winds(coords, desired_date, min_speed=5, source=OPENMETEO):
+    """Matplotlib version of the wind plots (used by the Qt UI)."""
+    return wind_mpl_figure(wind_data(coords, desired_date, min_speed, source))
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import datetime
 from datetime import date
 from meteo import wind_data, wind_figures, WEATHER_SOURCES
 from tides import PLOT_CONFIG, tide_figures_plotly, get_tides, available_sources, NoDataError
+from pdf_export import wind_pdf
 
 st.title("Click on the map to get the typical winds")
 
@@ -57,6 +58,9 @@ map = st_folium(world_map, height=300, width=600)
 # wind plot goes right below the map, above the tidal section
 placeholder = st.empty()
 
+pdf_slot = st.empty()
+export = {}  # filled below with what the PDF needs
+
 if map['last_clicked']:
     data = get_pos(map['last_clicked']['lat'],map['last_clicked']['lng'])
 
@@ -73,6 +77,7 @@ if map['last_clicked']:
             wc1.plotly_chart(figs[0], width="stretch", config=PLOT_CONFIG)
             wc2.plotly_chart(figs[1], width="stretch", config=PLOT_CONFIG)
             st.caption(wind['footer'])
+            export.update(point=data, wind=wind)
 
     if show_tides:
         st.subheader("Tidal currents (selected day ± 3 days)")
@@ -83,11 +88,21 @@ if map['last_clicked']:
             c1, c2 = st.columns([1, 3])
             c1.plotly_chart(compass_fig, width="stretch", config=PLOT_CONFIG)
             c2.plotly_chart(tide_fig, width="stretch", config=PLOT_CONFIG)
+            export.update(tides=tides, height_unit=height_unit)
             st.caption(f"Source: {tides['source']}. Red arrow: flood current direction. "
                        f"Blue arrow: ebb current direction. Times in {tides['tzlabel']}.")
         except NoDataError as e:
             st.info(f"{tide_source} does not provide tidal current data at or near this location. {e}")
         except Exception as e:
             st.error(f"Could not compute tidal currents: {e}")
+
+def make_pdf():
+    tides = export.get("tides")
+    return wind_pdf(export["point"], map.get("zoom") or 8, export["wind"], tides,
+                    export["height_unit"])
+
+
+pdf_slot.download_button("Export to PDF", make_pdf, file_name="winds.pdf", mime="application/pdf",
+                         on_click="ignore", disabled="wind" not in export, icon=":material/picture_as_pdf:")
 
 st.write("App by [Francesco Santini](https://francescosantini.com/). Code on [Github](https://github.com/fsantini/pymeteo).")
