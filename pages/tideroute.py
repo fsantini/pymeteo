@@ -1,5 +1,6 @@
 import math
 import sys
+import xml.etree.ElementTree as ET
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -99,6 +100,52 @@ if "route_pts" not in st.session_state:
     st.session_state.route_pts = []
     st.session_state.last_click = None
 pts = st.session_state.route_pts
+MAX_POINTS = 30
+
+
+def clear_route():
+    """Forget the points, the computed route/arrows and the map's frontend state (popups etc.)."""
+    st.session_state.route_pts = []
+    st.session_state.last_click = None
+    st.session_state.pop("applied", None)
+    st.session_state.pop("result", None)
+    st.session_state.map_gen = st.session_state.get("map_gen", 0) + 1  # new map key = fresh map
+
+
+def parse_gpx(data):
+    """Route points from a GPX file: the first route (rtept), else waypoints (wpt), else the first track."""
+    root = ET.fromstring(data)
+    def pts_of(tag, scope):
+        return [(float(e.get("lat")), float(e.get("lon"))) for e in scope.iter() if e.tag.rsplit("}", 1)[-1] == tag]
+    for tag, container in (("rtept", "rte"), ("wpt", None), ("trkpt", "trk")):
+        scope = next((e for e in root.iter() if e.tag.rsplit("}", 1)[-1] == container), None) if container else root
+        found = pts_of(tag, scope) if scope is not None else []
+        if found:
+            return found
+    return []
+
+
+gpx_file = st.file_uploader("Import route from GPX (route points, waypoints or track)", type=["gpx"])
+if gpx_file is None:
+    st.session_state.pop("gpx_done", None)
+elif st.session_state.get("gpx_done") != (gpx_file.name, gpx_file.size):
+    st.session_state.gpx_done = (gpx_file.name, gpx_file.size)
+    try:
+        imported = parse_gpx(gpx_file.getvalue())
+    except (ET.ParseError, ValueError, TypeError):
+        imported = []
+        st.error("Could not read the GPX file.")
+    else:
+        if len(imported) < 2:
+            st.error("The GPX file needs at least two points.")
+        elif len(imported) > MAX_POINTS:
+            st.error(f"The GPX file has {len(imported)} points; the maximum is {MAX_POINTS}.")
+        else:
+            clear_route()
+            st.session_state.route_pts = imported
+            st.session_state.n_points = len(imported)
+            st.rerun()
+    pts = st.session_state.route_pts
 
 MODES = ["Constant VMG (speed over ground)", "Constant propulsion (speed through water)"]
 mode = st.radio("Mode", MODES, index=1, horizontal=True)
@@ -110,7 +157,7 @@ dep_date = c1.date_input("Departure date", value=datetime.now().date(), key="dep
 dep_time = c2.time_input("Departure time", value=time(9, 0), step=900, key="dep_time")
 speed_kn = c3.number_input("Propulsion speed through water (kn)" if propulsion else "Boat speed over ground (kn)", min_value=0.5, max_value=40.0, value=5.0, step=0.5)
 c4, c5, c6 = st.columns(3)
-n_points = c4.number_input("Route points (start, waypoints, end)", min_value=2, max_value=12, value=2, step=1)
+n_points = c4.number_input("Route points (start, waypoints, end)", min_value=2, max_value=MAX_POINTS, value=2, step=1, key="n_points")
 n_steps = c5.slider("Number of steps", 2, 60, 10)
 source = c6.selectbox("Tide data source", available_sources())
 del pts[n_points:]  # fewer points requested than already placed
@@ -134,15 +181,6 @@ def fill_gaps(vec, dists):
             vec[i] = blend(vec[p], vec[q], (dists[i] - dists[p]) / (dists[q] - dists[p]))
             filled.add(i)
     return vec, filled
-
-
-def clear_route():
-    """Forget the points, the computed route/arrows and the map's frontend state (popups etc.)."""
-    st.session_state.route_pts = []
-    st.session_state.last_click = None
-    st.session_state.pop("applied", None)
-    st.session_state.pop("result", None)
-    st.session_state.map_gen = st.session_state.get("map_gen", 0) + 1  # new map key = fresh map
 
 
 rb1, rb2, _ = st.columns([1, 1, 3])
@@ -443,12 +481,24 @@ def use_departure(dt):
 
 if propulsion and ready:
     with st.expander("Find the best departure time"):
-        b1, b2 = st.columns(2)
-        window_h = b1.number_input("Window length from the departure time above (h)", 1.0, 72.0, 12.0, 1.0)
-        step_min = b2.number_input("Try a departure every (min)", 5, 240, 30, 5)
-        if st.button("Find best departure"):
+        if "win_start_date" not in st.session_state:  # first use: start at the departure above, 12 h long
+            ws0 = datetime.combine(dep_date, dep_time)
+            we0 = ws0 + timedelta(hours=12)
+            st.session_state.update(win_start_date=ws0.date(), win_start_time=ws0.time(),
+                                    win_end_date=we0.date(), win_end_time=we0.time())
+        b1, b2, b3, b4 = st.columns(4)
+        b1.date_input("Departure window start (date)", key="win_start_date")
+        b2.time_input("Departure window start (time)", step=900, key="win_start_time")
+        b3.date_input("Departure window end (date)", key="win_end_date")
+        b4.time_input("Departure window end (time)", step=900, key="win_end_time")
+        first = datetime.combine(st.session_state.win_start_date, st.session_state.win_start_time)
+        last_dep = datetime.combine(st.session_state.win_end_date, st.session_state.win_end_time)
+        window_h = (last_dep - first).total_seconds() / 3600
+        step_min = st.number_input("Try a departure every (min)", 5, 240, 30, 5)
+        if window_h < 0:
+            st.error("The window end must not be before the window start.")
+        if st.button("Find best departure", disabled=window_h < 0):
             bar = st.progress(0.0)
-            first = datetime.combine(dep_date, dep_time)
             st.session_state.best = dict(
                 trials=best_departure(pts, first, window_h, step_min, speed_kn, n_steps, source, use_local, bar.progress),
                 key=(tuple(pts), first, window_h, step_min, speed_kn, n_steps, source, use_local), use_local=use_local)
