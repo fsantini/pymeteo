@@ -6,6 +6,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import folium
+from branca.element import MacroElement, Template
 import numpy as np
 import streamlit as st
 from streamlit_folium import st_folium
@@ -22,6 +23,18 @@ st.write("Click twice on the map to choose the start and end points of a straigh
          "Choose departure time and boat speed: the tidal current is computed at the time the boat "
          "is expected to pass each step and shown as an arrow (length proportional to speed).")
 st.page_link("meteo_streamlit.py", label="← Back to the wind app")
+
+
+class DragReport(MacroElement):
+    """After a marker is dragged, fire a 'click' on it with its new position: streamlit-folium reports that
+    as last_object_clicked (plus the tooltip, which tells us which point it was)."""
+    _template = Template("""{% macro script(this, kwargs) %}
+        {{ this.target }}.on('dragend', function (e) { this.fire('click', {latlng: this.getLatLng()}); });
+    {% endmacro %}""")
+
+    def __init__(self, marker):
+        super().__init__()
+        self.target = marker.get_name()
 
 
 def interpolate(p1, p2, f):
@@ -107,6 +120,7 @@ def clear_route():
     """Forget the points, the computed route/arrows and the map's frontend state (popups etc.)."""
     st.session_state.route_pts = []
     st.session_state.last_click = None
+    st.session_state.pop("last_drag", None)
     st.session_state.pop("applied", None)
     st.session_state.pop("result", None)
     st.session_state.map_gen = st.session_state.get("map_gen", 0) + 1  # new map key = fresh map
@@ -189,6 +203,7 @@ if rb1.button("Reset points"):
     st.rerun()
 if rb2.button("Reverse route", disabled=len(pts) < 2):
     st.session_state.route_pts = pts[::-1]  # start <-> end, waypoints in reverse order
+    st.session_state.map_gen = st.session_state.get("map_gen", 0) + 1  # drop the map's stale click state
     st.rerun()
 
 def compute_propulsion(pts, dep_date, dep_time, speed_kn, n_steps, source, use_local=True):
@@ -383,8 +398,10 @@ res = st.session_state.get("result")
 m = folium.Map(location=pts[0] if pts else [0, 0], zoom_start=8 if pts else 2)
 for i, p in enumerate(pts):
     last = i == n_points - 1
-    folium.Marker(p, tooltip="Start" if i == 0 else ("End" if last else f"Waypoint {i}"),
-                  icon=folium.Icon(color="green" if i == 0 else ("red" if last else "orange"))).add_to(m)
+    mk = folium.Marker(p, tooltip="Start" if i == 0 else ("End" if last else f"Waypoint {i}"), draggable=True,
+                       icon=folium.Icon(color="green" if i == 0 else ("red" if last else "orange")))
+    mk.add_to(m)
+    DragReport(mk).add_to(m)
 if res and not pts:
     res = None
 if res:
@@ -410,7 +427,19 @@ else:
     slot_status.write(f"Click on the map to select the {'start' if not pts else ('end' if len(pts) == n_points - 1 else f'waypoint {len(pts)}')} point "
                        f"({len(pts) + 1} of {n_points}).")
 
-out = st_folium(m, height=450, width=700, returned_objects=["last_clicked"], key=f"routemap{st.session_state.get('map_gen', 0)}")
+out = st_folium(m, height=450, width=700, returned_objects=["last_clicked", "last_object_clicked", "last_object_clicked_tooltip"], key=f"routemap{st.session_state.get('map_gen', 0)}")
+# a dragged marker reports its new position as an object click, tooltip = which point it is
+drag = (out or {}).get("last_object_clicked")
+tip = (out or {}).get("last_object_clicked_tooltip")
+if drag and tip and (tip, drag["lat"], drag["lng"]) != st.session_state.get("last_drag"):
+    st.session_state.last_drag = (tip, drag["lat"], drag["lng"])
+    idx = 0 if tip == "Start" else (n_points - 1 if tip == "End" else
+                                    int(tip.split()[1]) if tip.startswith("Waypoint ") and tip.split()[1].isdigit() else None)
+    new = (drag["lat"], drag["lng"])
+    if idx is not None and idx < len(pts) and max(abs(new[0] - pts[idx][0]), abs(new[1] - pts[idx][1])) > 1e-7:
+        pts[idx] = new
+        st.rerun()
+
 click = out.get("last_clicked") if out else None
 if click:
     key = (click["lat"], click["lng"])
